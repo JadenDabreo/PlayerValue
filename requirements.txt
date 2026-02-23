@@ -1,0 +1,17 @@
+# NBA Player Contract Value Dashboard
+# Install: pip install -r requirements.txt
+# After installing, also run: playwright install chromium
+
+streamlit
+pandas
+openpyxl          # read/write Excel files
+xlsxwriter        # write styled Excel output (PlayerValue.py)
+plotly
+
+# Scrapers
+requests
+beautifulsoup4
+json5             # parse embedded JS data on dunksandthrees.com (epm.py)
+playwright        # headless browser for DARKO Shiny app (DARKO.py)
+selenium          # alternative browser automation (team_stats.py)
+lxml              # required by pandas read_html (contracts.py, BBR fetches)
