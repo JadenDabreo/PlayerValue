@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# IDE / tool settings
+.claude/
+
+# Temp Excel lock files
+~$*.xlsx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+.venv/
+
+# Playwright browser binaries
+playwright-browsers/
