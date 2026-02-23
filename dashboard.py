@@ -259,8 +259,8 @@ with st.sidebar:
     st.markdown("---")
     st.caption(
         "**Model**  \n"
-        "Skill = DARKO DPM (38%) + EPM (62%)  \n"
-        "Usage scalar = (USG% / 25)² quadratic → [0.35, 1.00]  \n"
+        "Skill = DARKO DPM (64%) + EPM (36%)  \n"
+        "Usage scalar = √(USG% / 25) → [0.55, 1.00]  \n"
         "Fair salary × usage scalar (role players discounted, stars uncapped)  \n"
         "Market rate: $6M / WAR  \n"
         "Replacement DPM: −2.0  \n"
@@ -332,8 +332,8 @@ c6.metric("Replacement",     int(tc.get("Replacement Level", 0)))
 st.markdown("---")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_table, tab_charts, tab_team, tab_player, tab_trade = st.tabs(
-    ["📋 Player Table", "📊 Charts", "🏟️ Team Summary", "🔍 Player Detail", "🔄 Trade Targets"]
+tab_table, tab_charts, tab_team, tab_player, tab_compare = st.tabs(
+    ["📋 Player Table", "📊 Charts", "🏟️ Team Summary", "🔍 Player Detail", "⚖️ Compare Players"]
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -472,6 +472,70 @@ with tab_charts:
     )
     fig3.update_layout(showlegend=False, height=300, margin=dict(t=10))
     st.plotly_chart(fig3, use_container_width=True)
+
+    # ── Contract vs Fair Market Value bar chart ───────────────────────────────
+    st.markdown("---")
+    st.markdown("##### Contract Salary vs Fair Market Value")
+
+    bar_pool = chart_data[
+        chart_data["fair_salary__n"].notna() & chart_data["salary__n"].notna()
+    ].copy()
+
+    ctrl_l, ctrl_r = st.columns([1, 3])
+    with ctrl_l:
+        show_n   = st.slider("Players to show", min_value=10, max_value=40,
+                             value=20, step=5, key="chart_bar_n")
+        bar_mode = st.radio("View", ["Top Bargains", "Most Overpaid"],
+                            key="chart_bar_mode")
+
+    if bar_mode == "Top Bargains":
+        bar_subset = bar_pool.nlargest(show_n, "surplus__n").sort_values(
+            "surplus__n", ascending=True
+        )
+        bar_title = f"Top {show_n} Most Underpaid Players"
+        fair_color = "#2ea44f"
+    else:
+        bar_subset = bar_pool.nsmallest(show_n, "surplus__n").sort_values(
+            "surplus__n", ascending=False
+        )
+        bar_title = f"Top {show_n} Most Overpaid Players"
+        fair_color = "#d73a49"
+
+    if not bar_subset.empty:
+        fig_contract = go.Figure()
+        fig_contract.add_trace(go.Bar(
+            name="Actual Salary",
+            y=bar_subset["Player"],
+            x=bar_subset["salary__n"],
+            orientation="h",
+            marker_color="#4a90d9",
+            text=[money_str(v) for v in bar_subset["salary__n"]],
+            textposition="inside",
+            insidetextanchor="middle",
+            hovertemplate="%{y}<br>Actual: %{x:$,.0f}<extra></extra>",
+        ))
+        fig_contract.add_trace(go.Bar(
+            name="Fair Market Value",
+            y=bar_subset["Player"],
+            x=bar_subset["fair_salary__n"],
+            orientation="h",
+            marker_color=fair_color,
+            text=[money_str(v) for v in bar_subset["fair_salary__n"]],
+            textposition="inside",
+            insidetextanchor="middle",
+            hovertemplate="%{y}<br>Fair Value: %{x:$,.0f}<extra></extra>",
+        ))
+        fig_contract.update_layout(
+            barmode="group",
+            title=bar_title,
+            xaxis_tickformat="$,.0f",
+            xaxis_title="Amount ($)",
+            height=max(460, show_n * 30),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+            margin=dict(t=50, b=20),
+        )
+        with ctrl_r:
+            st.plotly_chart(fig_contract, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -694,152 +758,227 @@ with tab_player:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 5 — Trade Targets
+# TAB 5 — Player Comparison
 # ═══════════════════════════════════════════════════════════════════════════════
-with tab_trade:
-    st.markdown("#### 🔄 Trade Target Finder")
-    st.caption(
-        "Select a team to see their offensive/defensive needs and ranked attainable "
-        "targets from other teams. Attainability reflects how likely a team is to move "
-        "a player based on their contract value tier."
-    )
+with tab_compare:
+    st.markdown("#### ⚖️ Player Comparison")
 
-    all_teams_trade = sorted(df["Team"].dropna().unique().tolist())
-    trade_team = st.selectbox("Select team to analyze", all_teams_trade, key="trade_team_sel")
+    all_cmp_players = sorted(df["Player"].dropna().unique().tolist())
+    sel_a_col, sel_b_col = st.columns(2)
+    with sel_a_col:
+        player_a = st.selectbox("Player A", [""] + all_cmp_players, key="cmp_a")
+    with sel_b_col:
+        player_b = st.selectbox("Player B", [""] + all_cmp_players, key="cmp_b")
 
-    # Load profiles
-    profiles = compute_team_profiles(df)
-
-    if trade_team not in profiles.index:
-        st.warning("Team profile not available. Ensure PlayerValue.py has been run.")
+    if not player_a or not player_b:
+        st.info("Select two players above to compare.")
+    elif player_a == player_b:
+        st.warning("Select two different players to compare.")
     else:
-        tp = profiles.loc[trade_team]
+        row_a = df[df["Player"] == player_a].iloc[0]
+        row_b = df[df["Player"] == player_b].iloc[0]
 
-        # ── Team profile cards ────────────────────────────────────────────────
-        st.markdown("##### Team Profile")
-        pc1, pc2, pc3, pc4, pc5 = st.columns(5)
-        pc1.metric("Offensive Rating",  f"{tp.get('oEFF', '—'):.1f}" if pd.notna(tp.get("oEFF")) else "—",
-                   help="Points scored per 100 possessions (oEFF)")
-        pc2.metric("Off Rank",          f"#{int(tp.get('oEFF_rank', 0))}" if pd.notna(tp.get("oEFF_rank")) else "—",
-                   help="1 = best offense in league")
-        pc3.metric("Defensive Rating",  f"{tp.get('dEFF', '—'):.1f}" if pd.notna(tp.get("dEFF")) else "—",
-                   help="Points allowed per 100 possessions (dEFF) — lower is better")
-        pc4.metric("Def Rank",          f"#{int(tp.get('dEFF_rank', 0))}" if pd.notna(tp.get("dEFF_rank")) else "—",
-                   help="1 = best defense in league (lowest dEFF)")
-        w = int(tp.get("W", 0)) if pd.notna(tp.get("W")) else "—"
-        l = int(tp.get("L", 0)) if pd.notna(tp.get("L")) else "—"
-        pc5.metric("Record",            f"{w}–{l}")
+        # ── Player header cards ───────────────────────────────────────────────
+        def player_header(row, name):
+            tier    = row.get("value_tier", "")
+            bg      = TIER_COLORS.get(tier, "#eeeeee")
+            fg      = TIER_TEXT_COLORS.get(tier, "#000000")
+            team    = row.get("Team", "—")
+            age     = int(row.get("Age")) if pd.notna(row.get("Age")) else "—"
+            salary  = money_str(parse_money(row.get("salary")))
+            st.markdown(
+                f"<div style='background:#f6f8fa; border-radius:10px; padding:14px 18px;'>"
+                f"<h3 style='margin:0'>{name}</h3>"
+                f"<span style='background:{bg}; color:{fg}; padding:3px 10px; "
+                f"border-radius:12px; font-size:0.8em; font-weight:bold'>{tier}</span>"
+                f"&nbsp; <span style='color:#555; font-size:0.9em'>{team} · Age {age} · {salary}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
 
-        # ── Need badges ───────────────────────────────────────────────────────
-        st.markdown("##### Identified Needs")
-        badge_html = ""
-        for label_key, score_key, color_key, icon in [
-            ("Offense",  "off_label",   "off_color",   "🏹"),
-            ("Defense",  "def_label",   "def_color",   "🛡️"),
-            ("Skill",    "skill_label", "skill_color", "⭐"),
+        hdr_a, hdr_b = st.columns(2)
+        with hdr_a:
+            player_header(row_a, player_a)
+        with hdr_b:
+            player_header(row_b, player_b)
+
+        st.markdown("---")
+
+        # ── Side-by-side stat comparison ──────────────────────────────────────
+        st.markdown("##### Skill & Contract Stats")
+
+        COMPARE_STATS = [
+            ("DARKO DPM",  "DPM",            ":.2f", True),
+            ("EPM",        "EPM",            ":.2f", True),
+            ("Composite",  "composite_skill",":.2f", True),
+            ("WAR",        "WAR",            ":.2f", True),
+            ("O-DPM",      "O-DPM",          ":.2f", True),
+            ("D-DPM",      "D-DPM",          ":.2f", True),
+            ("O-EPM",      "O-EPM",          ":.2f", True),
+            ("D-EPM",      "D-EPM",          ":.2f", True),
+            ("USG%",       "USG%",           ":.1f", True),
+            ("Usage Scalar","usage_scalar",  ":.2f", True),
+            ("Games",      "G",              ":.0f", True),
+            ("Proj. MP",   "projected_MP",   ":.0f", True),
+        ]
+
+        # Header row
+        lbl_col, a_col, b_col = st.columns([2, 2, 2])
+        lbl_col.markdown("**Stat**")
+        a_col.markdown(f"**{player_a}**")
+        b_col.markdown(f"**{player_b}**")
+
+        for label, col, fmt, higher_better in COMPARE_STATS:
+            if col not in df.columns:
+                continue
+            va = row_a.get(col)
+            vb = row_b.get(col)
+            if pd.isna(va) and pd.isna(vb):
+                continue
+
+            va_f = float(va) if pd.notna(va) else None
+            vb_f = float(vb) if pd.notna(vb) else None
+            a_str = (f"{va_f:{fmt[1:]}}") if va_f is not None else "—"
+            b_str = (f"{vb_f:{fmt[1:]}}") if vb_f is not None else "—"
+
+            # Highlight the better value green
+            if va_f is not None and vb_f is not None:
+                a_wins = va_f > vb_f if higher_better else va_f < vb_f
+                a_style = "color:#1a7f37; font-weight:bold" if a_wins else "color:#555"
+                b_style = "color:#1a7f37; font-weight:bold" if not a_wins else "color:#555"
+            else:
+                a_style = b_style = "color:#555"
+
+            lc, ac, bc = st.columns([2, 2, 2])
+            lc.markdown(f"<span style='color:#888; font-size:0.9em'>{label}</span>",
+                        unsafe_allow_html=True)
+            ac.markdown(f"<span style='{a_style}'>{a_str}</span>", unsafe_allow_html=True)
+            bc.markdown(f"<span style='{b_style}'>{b_str}</span>", unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # ── Radar chart ───────────────────────────────────────────────────────
+        st.markdown("##### Skill Profile Radar")
+
+        radar_cols = ["composite_skill", "O-EPM", "D-EPM", "O-DPM", "D-DPM", "WAR"]
+        radar_cols = [c for c in radar_cols if c in df.columns]
+        radar_labels = {
+            "composite_skill": "Composite", "WAR": "WAR",
+            "O-EPM": "Off EPM", "D-EPM": "Def EPM",
+            "O-DPM": "Off DPM", "D-DPM": "Def DPM",
+        }
+
+        def pct_score(series, value):
+            """Percentile rank 0–10."""
+            if pd.isna(value):
+                return 5.0
+            valid = series.dropna()
+            return (valid < float(value)).sum() / max(len(valid), 1) * 10
+
+        labels_r = [radar_labels.get(c, c) for c in radar_cols]
+        scores_a = [pct_score(df[c], row_a.get(c)) for c in radar_cols]
+        scores_b = [pct_score(df[c], row_b.get(c)) for c in radar_cols]
+
+        fig_radar = go.Figure()
+        for name, scores, color in [
+            (player_a, scores_a, "#4a90d9"),
+            (player_b, scores_b, "#2ea44f"),
         ]:
-            lbl   = tp.get(label_key.lower()[:3] + "_label", "—") if label_key == "Offense" else tp.get(label_key[:3].lower() + "_label", "—")
-            color = tp.get(label_key.lower()[:3] + "_color", "#888") if label_key == "Offense" else tp.get(label_key[:3].lower() + "_color", "#888")
-            # Use explicit keys
-            lbl   = tp.get(f"{'off' if label_key=='Offense' else 'def' if label_key=='Defense' else 'skill'}_label", "—")
-            color = tp.get(f"{'off' if label_key=='Offense' else 'def' if label_key=='Defense' else 'skill'}_color", "#888888")
-            badge_html += (
-                f"<span style='background:{color}; color:white; padding:6px 14px; "
-                f"border-radius:20px; font-weight:bold; margin-right:10px; font-size:0.9em'>"
-                f"{icon} {label_key}: {lbl}</span>"
-            )
-        st.markdown(badge_html, unsafe_allow_html=True)
-        st.markdown("")
-
-        # ── Build candidate pool ──────────────────────────────────────────────
-        min_games = st.slider("Minimum games played", min_value=5, max_value=40, value=15, step=5)
-        candidates = df[
-            (df["Team"] != trade_team) &
-            (df["EPM"].notna()) &
-            (df["G"] >= min_games) &
-            (~df["value_tier"].isin(["Replacement Level"]))
-        ].copy()
-
-        # Attainability
-        candidates["attainability_label"]  = candidates["value_tier"].map(
-            lambda t: TIER_ATTAINABILITY.get(t, ("Unknown", 0.4))[0]
+            fig_radar.add_trace(go.Scatterpolar(
+                r=scores + [scores[0]],
+                theta=labels_r + [labels_r[0]],
+                fill="toself",
+                name=name,
+                line_color=color,
+                opacity=0.65,
+            ))
+        fig_radar.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 10],
+                                       tickvals=[2, 4, 6, 8, 10],
+                                       ticktext=["20%", "40%", "60%", "80%", "100%"])),
+            showlegend=True,
+            height=400,
+            margin=dict(t=20, b=20),
         )
-        candidates["attainability_weight"] = candidates["value_tier"].map(
-            lambda t: TIER_ATTAINABILITY.get(t, ("Unknown", 0.4))[1]
-        )
+        st.plotly_chart(fig_radar, use_container_width=True)
 
-        # Fit scores
-        candidates["off_fit"]   = candidates["O-EPM"] * 0.6 + candidates["composite_skill"] * 0.4
-        candidates["def_fit"]   = candidates["D-EPM"] * 0.6 + candidates["composite_skill"] * 0.4
-        candidates["skill_fit"] = candidates["composite_skill"]
+        st.markdown("---")
 
-        # Final scores
-        candidates["off_score"]   = candidates["off_fit"]   * candidates["attainability_weight"]
-        candidates["def_score"]   = candidates["def_fit"]   * candidates["attainability_weight"]
-        candidates["skill_score"] = candidates["skill_fit"] * candidates["attainability_weight"]
+        # ── Current-year salary vs fair value ─────────────────────────────────
+        st.markdown("##### Current Season: Salary vs Fair Market Value")
 
-        target_display_cols = ["Player", "Team", "EPM", "O-EPM", "D-EPM",
-                               "composite_skill", "salary", "value_tier",
-                               "attainability_label"]
-        target_display_cols = [c for c in target_display_cols if c in candidates.columns]
+        sal_a  = parse_money(row_a.get("salary"))
+        sal_b  = parse_money(row_b.get("salary"))
+        fair_a = parse_money(row_a.get("fair_salary"))
+        fair_b = parse_money(row_b.get("fair_salary"))
+        surp_a = parse_money(row_a.get("surplus"))
+        surp_b = parse_money(row_b.get("surplus"))
 
-        def style_attainability(val):
-            color = ATTAINABILITY_COLORS.get(val, "#888888")
-            return f"color: {color}; font-weight: bold"
+        bar_players = [n for n, s in [(player_a, sal_a), (player_b, sal_b)] if pd.notna(s)]
+        bar_actuals = [s for s in [sal_a, sal_b] if pd.notna(s)]
+        bar_fairs   = [f for _, f, s in [(player_a, fair_a, sal_a), (player_b, fair_b, sal_b)]
+                       if pd.notna(s)]
 
-        # ── Sub-tabs ──────────────────────────────────────────────────────────
-        sub_off, sub_def, sub_best = st.tabs(
-            ["🏹 Offensive Targets", "🛡️ Defensive Targets", "⭐ Best Overall"]
-        )
-
-        def render_targets(sub_tab, score_col, tab_label):
-            with sub_tab:
-                top = (
-                    candidates
-                    .sort_values(score_col, ascending=False)
-                    .head(12)[target_display_cols]
-                    .reset_index(drop=True)
-                )
-                top.index += 1   # 1-based ranking
-                _tgt_fmt = {c: "{:.2f}" for c in
-                            ("EPM", "O-EPM", "D-EPM", "composite_skill")
-                            if c in top.columns}
-                styled = (
-                    top.style
-                    .format(_tgt_fmt, na_rep="—")
-                    .applymap(_style_tier,            subset=["value_tier"])
-                    .applymap(style_attainability,    subset=["attainability_label"])
-                )
-                st.dataframe(styled, use_container_width=True)
-                st.caption(
-                    f"Sorted by {tab_label} fit × attainability. "
-                    "Players with no EPM data excluded."
-                )
-
-        render_targets(sub_off,  "off_score",   "offensive")
-        render_targets(sub_def,  "def_score",   "defensive")
-        render_targets(sub_best, "skill_score", "overall skill")
-
-        # ── Salary context ────────────────────────────────────────────────────
-        with st.expander("💰 Salary matching context — what this team can offer"):
-            own_roster_cols = ["Player", "salary", "value_tier", "WAR", "composite_skill"]
-            if "salary__n" in df.columns:
-                own_roster_cols.append("salary__n")
-            own_roster = (
-                df[df["Team"] == trade_team][own_roster_cols]
-                .sort_values("salary__n" if "salary__n" in df.columns else "WAR",
-                             ascending=False, na_position="last")
-                .drop(columns=["salary__n"], errors="ignore")
+        if bar_players:
+            fig_sal = go.Figure()
+            fig_sal.add_trace(go.Bar(
+                name="Actual Salary", x=bar_players, y=bar_actuals,
+                marker_color="#4a90d9",
+                text=[money_str(v) for v in bar_actuals], textposition="outside",
+            ))
+            fig_sal.add_trace(go.Bar(
+                name="Fair Market Value", x=bar_players, y=bar_fairs,
+                marker_color="#2ea44f",
+                text=[money_str(v) for v in bar_fairs], textposition="outside",
+            ))
+            fig_sal.update_layout(
+                barmode="group", yaxis_tickformat="$,.0f",
+                height=340, margin=dict(t=40, b=20),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
             )
-            _own_fmt = {c: "{:.2f}" for c in ("WAR", "composite_skill") if c in own_roster.columns}
-            st.dataframe(
-                own_roster.style
-                .format(_own_fmt, na_rep="—")
-                .applymap(_style_tier, subset=["value_tier"]),
-                use_container_width=True,
-                hide_index=True,
-            )
-            st.caption(
-                "In NBA trades, the acquiring team must send back roughly matching salary. "
-                "Use this roster to identify players or packages that could match a target's salary."
-            )
+            st.plotly_chart(fig_sal, use_container_width=True)
+
+        # ── Multi-year surplus trajectory ─────────────────────────────────────
+        if future_cols:
+            def surplus_series(row):
+                xs, ys = [], []
+                s = parse_money(row.get("surplus"))
+                if pd.notna(s):
+                    xs.append(f"{CURRENT_SEASON} ▶")
+                    ys.append(s)
+                for yr in future_cols:
+                    if pd.notna(parse_money(row.get(yr))):
+                        sv = parse_money(row.get(f"surplus_{yr}"))
+                        xs.append(yr)
+                        ys.append(sv if pd.notna(sv) else None)
+                return xs, ys
+
+            xs_a, ys_a = surplus_series(row_a)
+            xs_b, ys_b = surplus_series(row_b)
+
+            if len(xs_a) > 1 or len(xs_b) > 1:
+                st.markdown("##### Contract Surplus Trajectory")
+                fig_traj = go.Figure()
+                for name, xs, ys, color in [
+                    (player_a, xs_a, ys_a, "#4a90d9"),
+                    (player_b, xs_b, ys_b, "#2ea44f"),
+                ]:
+                    if xs:
+                        fig_traj.add_trace(go.Scatter(
+                            x=xs, y=ys,
+                            mode="lines+markers",
+                            name=name,
+                            line=dict(color=color, width=2),
+                            marker=dict(size=8),
+                            hovertemplate="%{x}: %{y:$,.0f}<extra>" + name + "</extra>",
+                        ))
+                fig_traj.add_hline(y=0, line_dash="dash", line_color="gray",
+                                   opacity=0.5, annotation_text="Break even")
+                fig_traj.update_layout(
+                    yaxis_tickformat="$,.0f",
+                    yaxis_title="Surplus (positive = underpaid)",
+                    height=320,
+                    margin=dict(t=20, b=20),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+                )
+                st.plotly_chart(fig_traj, use_container_width=True)

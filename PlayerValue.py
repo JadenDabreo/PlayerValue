@@ -45,8 +45,8 @@ LEAGUE_MINIMUM      = 1_119_563   # approximate 2025-26 minimum salary
 POINTS_PER_WIN      = 33.5        # Pythagorean pts-per-win over full season
 EXPECTED_GAMES      = 72          # standard projected season for contract valuation
 DPM_IMPROVEMENT_CAP = 1.5         # max single-year DARKO improvement applied (avoid overreacting to noise)
-DARKO_WEIGHT        = 0.5         # weight for DARKO DPM in composite skill blend
-EPM_WEIGHT          = 0.8         # weight for EPM in composite skill blend
+DARKO_WEIGHT        = 0.7         # weight for DARKO DPM in composite skill blend
+EPM_WEIGHT          = 0.3         # weight for EPM in composite skill blend
 LEAGUE_AVG_USG      = 25.0        # primary ball-handler threshold — players below this are discounted
 
 output_folder = "PlayerValue"
@@ -205,6 +205,13 @@ future_season_cols = [c for c in contracts.columns if re.match(r"\d{4}-\d{2}$", 
 for df_ in (darko, contracts, bbr_stats):
     df_["_key"] = df_["Player"].map(normalize_name)
 
+# Deduplicate each source on _key — traded players or scraping artifacts
+# can produce multiple rows; keep the first (highest-minutes for BBR, first
+# listed for DARKO/contracts which are already sorted by relevance).
+darko     = darko.drop_duplicates(subset="_key", keep="first")
+contracts = contracts.drop_duplicates(subset="_key", keep="first")
+bbr_stats = bbr_stats.drop_duplicates(subset="_key", keep="first")
+
 # Merge: DARKO is the spine
 merged = darko.merge(bbr_stats[["_key", "G", "MP", "Age"]], on="_key", how="left")
 merged = merged.merge(contracts[["_key", "salary"] + future_season_cols], on="_key", how="left")
@@ -212,6 +219,7 @@ merged = merged.merge(contracts[["_key", "salary"] + future_season_cols], on="_k
 # Merge EPM data if available
 if not epm_data.empty:
     epm_data["_key"] = epm_data["Player"].map(normalize_name)
+    epm_data = epm_data.drop_duplicates(subset="_key", keep="first")
     epm_merge_cols = ["_key", "EPM", "O-EPM", "D-EPM"]
     if "epm_usg" in epm_data.columns:
         epm_merge_cols.append("epm_usg")
@@ -241,6 +249,12 @@ else:
     merged["D-EPM"] = float("nan")
 
 merged.drop(columns="_key", inplace=True)
+
+# Final safety dedup — catches any fan-out from many-to-many key collisions
+before = len(merged)
+merged = merged.drop_duplicates(subset="Player", keep="first")
+if len(merged) < before:
+    print(f"  Removed {before - len(merged)} duplicate player rows after merge")
 
 # ── Value model (keep numeric until after sort) ───────────────────────────────
 merged["G"]   = merged["G"].fillna(0).astype(int)
@@ -284,18 +298,18 @@ merged["WAR"] = (
 # EPM/DPM measure per-possession quality, not volume. A role player at 10% USG
 # posting good efficiency would never command a star's salary on the open market.
 # We apply a usage scalar to fair_salary only — WAR and composite_skill stay pure.
-#   scalar = (USG% / 25)^2 quadratic → clamped to [0.35, 1.00]
-#   Reference is 25% (primary ball-handler), not league average.
-#   Quadratic compounding means the penalty grows steeply below that threshold.
-#   10% USG → ×0.35 (floor)  |  15% → ×0.36  |  18% → ×0.52  |  22% → ×0.77  |  25%+ → ×1.00
+#   scalar = sqrt(USG% / 25) → clamped to [0.55, 1.00]
+#   Reference is 25% (primary ball-handler threshold).
+#   Square root gives a gentler curve — role players aren't over-penalized.
+#   10% USG → ×0.55 (floor)  |  15% → ×0.77  |  18% → ×0.85  |  22% → ×0.94  |  25%+ → ×1.00
 has_usg = merged["USG%"].notna() if "USG%" in merged.columns else pd.Series(False, index=merged.index)
 usage_scalar = pd.Series(1.0, index=merged.index)
 if has_usg.any():
     usage_scalar[has_usg] = (
         (merged.loc[has_usg, "USG%"] / LEAGUE_AVG_USG)
         .clip(lower=0.0, upper=1.0)
-        .apply(lambda x: x ** 2)       # quadratic — compounds steeply for low usage
-        .clip(lower=0.35, upper=1.0)   # floor at 0.35, never inflate above 1.0
+        .apply(lambda x: x ** 0.5)     # sqrt — gentler curve for low-usage players
+        .clip(lower=0.55, upper=1.0)   # floor at 0.55, never inflate above 1.0
     )
 merged["usage_scalar"] = usage_scalar.round(3)
 
