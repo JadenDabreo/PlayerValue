@@ -53,12 +53,25 @@ output_folder = "PlayerValue"
 os.makedirs(output_folder, exist_ok=True)
 
 
+# ── Name overrides — maps any alias to the canonical display name ─────────────
+# Add entries here whenever a player is known by different names across sources.
+# Key: normalized alias (lowercase, no accents), Value: canonical display name.
+NAME_OVERRIDES = {
+    "nah'shon hyland": "Bones Hyland",
+}
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def normalize_name(name: str) -> str:
     name = unicodedata.normalize("NFD", str(name))
     name = "".join(c for c in name if unicodedata.category(c) != "Mn")
     name = re.sub(r"\s+(jr\.?|sr\.?|ii+|iii+|iv)$", "", name.strip(), flags=re.IGNORECASE)
     return name.lower().strip()
+
+
+def canonical_name(name: str) -> str:
+    """Resolves known aliases to a single canonical display name."""
+    return NAME_OVERRIDES.get(normalize_name(name), name)
 
 
 def age_dpm_delta(age: float) -> float:
@@ -149,18 +162,22 @@ def load_contracts() -> pd.DataFrame:
     return df[keep].rename(columns={current_col: "salary"})
 
 
+STYLE_STATS = ["PTS", "TRB", "AST", "STL", "BLK", "TOV", "3PA", "3P%", "FTA", "FT%"]
+
+
 def fetch_bbr_pergame() -> pd.DataFrame:
-    """Only live fetch needed — no existing script covers minutes played or age."""
-    print(f"  Minutes ← {BBR_STATS_URL}")
+    """Live fetch from Basketball-Reference: minutes, age, and per-game style stats."""
+    print(f"  Stats  ← {BBR_STATS_URL}")
     df = pd.read_html(BBR_STATS_URL)[0]
     df = df[pd.to_numeric(df["Rk"], errors="coerce").notna()]
-    df["G"]   = pd.to_numeric(df["G"],   errors="coerce")
-    df["MP"]  = pd.to_numeric(df["MP"],  errors="coerce")
-    df["Age"] = pd.to_numeric(df["Age"], errors="coerce")
+    for col in ["G", "MP", "Age"] + STYLE_STATS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
     # Traded players: BBR lists TOT row first — keep it
     df = df.drop_duplicates(subset="Player", keep="first")
-    print(f"  {len(df)} players with minutes/age data")
-    return df[["Player", "G", "MP", "Age"]].copy()
+    keep = ["Player", "G", "MP", "Age"] + [c for c in STYLE_STATS if c in df.columns]
+    print(f"  {len(df)} players with per-game stats")
+    return df[keep].copy()
 
 
 def load_epm() -> pd.DataFrame:
@@ -201,9 +218,10 @@ epm_data  = load_epm()
 # Identify future season columns from contracts (all except "salary" = current)
 future_season_cols = [c for c in contracts.columns if re.match(r"\d{4}-\d{2}$", c)]
 
-# Normalize names for cross-source matching
+# Apply canonical name overrides to all sources, then normalize for merging
 for df_ in (darko, contracts, bbr_stats):
-    df_["_key"] = df_["Player"].map(normalize_name)
+    df_["Player"] = df_["Player"].map(canonical_name)
+    df_["_key"]   = df_["Player"].map(normalize_name)
 
 # Deduplicate each source on _key — traded players or scraping artifacts
 # can produce multiple rows; keep the first (highest-minutes for BBR, first
@@ -213,12 +231,14 @@ contracts = contracts.drop_duplicates(subset="_key", keep="first")
 bbr_stats = bbr_stats.drop_duplicates(subset="_key", keep="first")
 
 # Merge: DARKO is the spine
-merged = darko.merge(bbr_stats[["_key", "G", "MP", "Age"]], on="_key", how="left")
+bbr_keep = ["_key", "G", "MP", "Age"] + [c for c in STYLE_STATS if c in bbr_stats.columns]
+merged = darko.merge(bbr_stats[bbr_keep], on="_key", how="left")
 merged = merged.merge(contracts[["_key", "salary"] + future_season_cols], on="_key", how="left")
 
 # Merge EPM data if available
 if not epm_data.empty:
-    epm_data["_key"] = epm_data["Player"].map(normalize_name)
+    epm_data["Player"] = epm_data["Player"].map(canonical_name)
+    epm_data["_key"]   = epm_data["Player"].map(normalize_name)
     epm_data = epm_data.drop_duplicates(subset="_key", keep="first")
     epm_merge_cols = ["_key", "EPM", "O-EPM", "D-EPM"]
     if "epm_usg" in epm_data.columns:
@@ -398,6 +418,8 @@ value_cols = [
     "EPM", "O-EPM", "D-EPM",
     "composite_skill", "epm_used",
     "USG%", "usage_scalar", "G", "projected_MP", "WAR",
+    # Per-game style stats from Basketball-Reference
+    "PTS", "TRB", "AST", "STL", "BLK", "TOV", "3PA", "3P%", "FTA", "FT%",
     "salary", "fair_salary", "surplus", "$/WAR", "value_tier",
 ]
 value_cols = [c for c in value_cols if c in merged.columns]

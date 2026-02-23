@@ -77,6 +77,26 @@ ATTAINABILITY_COLORS = {
     "Unknown":     "#888888",
 }
 
+# Known aliases → canonical name in the dataset.
+# Add entries here when a player is commonly searched by a different name.
+PLAYER_ALIASES = {
+    "Nah'Shon Hyland": "Bones Hyland",
+    "Nahshon Hyland":  "Bones Hyland",
+}
+
+
+def _player_options(player_list: list) -> list:
+    """Returns the player list with alias entries appended (sorted separately)."""
+    extras = sorted(
+        alias for alias, canon in PLAYER_ALIASES.items() if canon in player_list
+    )
+    return player_list + extras
+
+
+def _resolve_player(name: str) -> str:
+    """Resolves an alias to the canonical dataset name."""
+    return PLAYER_ALIASES.get(name, name)
+
 st.set_page_config(
     page_title="NBA Contract Value",
     page_icon="🏀",
@@ -95,6 +115,17 @@ def money_str(v) -> str:
     if pd.isna(v):
         return "—"
     return f"-${abs(v):,.0f}" if v < 0 else f"${v:,.0f}"
+
+
+def _norm(name: str) -> str:
+    """Lightweight name normaliser for measurement merge (mirrors measurements.py)."""
+    import unicodedata as _ud
+    if not isinstance(name, str):
+        return ""
+    name = _ud.normalize("NFD", name)
+    name = "".join(c for c in name if _ud.category(c) != "Mn")
+    name = re.sub(r"\s+(jr\.?|sr\.?|ii+|iii+|iv)$", "", name.strip(), flags=re.IGNORECASE)
+    return name.lower().strip()
 
 
 # ── Data ──────────────────────────────────────────────────────────────────────
@@ -118,9 +149,10 @@ def load_data():
         if sample.apply(lambda x: bool(money_re.match(x))).any():
             df[f"{col}__n"] = df[col].apply(parse_money)
 
-    # Ensure numeric DPM/EPM/WAR
+    # Ensure numeric DPM/EPM/WAR/style stats
     for col in ("DPM", "O-DPM", "D-DPM", "EPM", "O-EPM", "D-EPM",
-                "composite_skill", "WAR", "G", "projected_MP", "USG%", "usage_scalar"):
+                "composite_skill", "WAR", "G", "projected_MP", "USG%", "usage_scalar",
+                "PTS", "TRB", "AST", "STL", "BLK", "TOV", "3PA", "3P%", "FTA", "FT%"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -133,6 +165,24 @@ def load_data():
     # Age as whole number
     if "Age" in df.columns:
         df["Age"] = pd.to_numeric(df["Age"], errors="coerce").round(0).astype("Int64")
+
+    # ── Merge physical measurements if available ──────────────────────────────
+    meas_files = sorted(
+        glob.glob(os.path.join("Measurements", "player_measurements_*.xlsx")), reverse=True
+    )
+    if meas_files:
+        meas = pd.read_excel(meas_files[0], sheet_name="Measurements")
+        for col in ("Height_in", "Wingspan_in", "Weight_lbs", "ArmLength_in"):
+            if col in meas.columns:
+                meas[col] = pd.to_numeric(meas[col], errors="coerce")
+        meas["_key"] = meas["Player"].apply(_norm)
+        df["_key"]   = df["Player"].apply(_norm)
+        meas_keep = ["_key"] + [c for c in
+                     ("Height_in", "Wingspan_in", "Weight_lbs", "ArmLength_in",
+                      "Height_display", "Wingspan_display", "Position")
+                     if c in meas.columns]
+        df = df.merge(meas[meas_keep].drop_duplicates("_key"), on="_key", how="left")
+        df.drop(columns=["_key"], inplace=True)
 
     return df, tier_df, future_cols
 
@@ -234,8 +284,10 @@ with st.sidebar:
     teams = ["All Teams"] + sorted(df["Team"].dropna().unique().tolist())
     sel_team = st.selectbox("Team", teams)
 
-    all_players = ["All Players"] + sorted(df["Player"].dropna().unique().tolist())
-    sel_player_sidebar = st.selectbox("Search Player", all_players, index=0)
+    _base_players = sorted(df["Player"].dropna().unique().tolist())
+    all_players = ["All Players"] + _player_options(_base_players)
+    sel_player_sidebar_raw = st.selectbox("Search Player", all_players, index=0)
+    sel_player_sidebar = _resolve_player(sel_player_sidebar_raw)
 
     avail_tiers = [t for t in TIER_ORDER if t in df["value_tier"].values]
     sel_tiers = st.multiselect("Value Tier", avail_tiers, default=avail_tiers)
@@ -258,16 +310,13 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption(
-        "**Model**  \n"
-        "Skill = DARKO DPM (64%) + EPM (36%)  \n"
-        "Usage scalar = √(USG% / 25) → [0.55, 1.00]  \n"
-        "Fair salary × usage scalar (role players discounted, stars uncapped)  \n"
-        "Market rate: $6M / WAR  \n"
-        "Replacement DPM: −2.0  \n"
-        "Projected games: 72  \n"
-        "**Yr 1**: DARKO DPM Improvement  \n"
-        "**Yr 2+**: NBA age curve  \n"
-        "(peak ≈ age 27, growth before, decline after)"
+        "**WAR (Wins Above Replacement)**  \n"
+        "Measures how many wins a player adds over a freely available "
+        "replacement-level player across a full season. It combines predictive "
+        "and descriptive advanced metrics, adjusted for role and usage, to "
+        "estimate a player's true market value.  \n\n"
+        "Multi-year projections account for DARKO's trajectory signal in year 1 "
+        "and the NBA aging curve thereafter."
     )
 
     st.markdown("---")
@@ -305,6 +354,33 @@ with st.sidebar:
         st.success("✅ Data refreshed!")
         st.rerun()
 
+    st.markdown("---")
+    # ── Physical measurements freshness ───────────────────────────────────────
+    meas_files_sb = sorted(
+        glob.glob(os.path.join("Measurements", "player_measurements_*.xlsx")), reverse=True
+    )
+    if meas_files_sb:
+        mtime_m = os.path.getmtime(meas_files_sb[0])
+        st.caption(
+            f"**Measurements last updated:**  \n"
+            f"{datetime.fromtimestamp(mtime_m).strftime('%b %d, %Y  %I:%M %p')}"
+        )
+    else:
+        st.caption("**Measurements:** not fetched yet — click below to load")
+
+    if st.button("📏 Refresh Measurements",
+                 help="Fetches height, wingspan & weight from craftednba.com (~10 sec)."):
+        py  = sys.executable
+        cwd = os.path.dirname(os.path.abspath(__file__))
+        with st.spinner("Fetching player measurements…"):
+            rm = subprocess.run([py, "measurements.py"], capture_output=True, text=True, cwd=cwd)
+        if rm.returncode != 0:
+            st.error(f"Measurements fetch failed:\n```\n{rm.stderr[-2000:]}\n```")
+        else:
+            st.cache_data.clear()
+            st.success("✅ Measurements updated!")
+            st.rerun()
+
 # ── Filter ────────────────────────────────────────────────────────────────────
 filt = df.copy()
 if sel_team != "All Teams":
@@ -332,8 +408,9 @@ c6.metric("Replacement",     int(tc.get("Replacement Level", 0)))
 st.markdown("---")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_table, tab_charts, tab_team, tab_player, tab_compare = st.tabs(
-    ["📋 Player Table", "📊 Charts", "🏟️ Team Summary", "🔍 Player Detail", "⚖️ Compare Players"]
+tab_table, tab_charts, tab_team, tab_player, tab_compare, tab_similar = st.tabs(
+    ["📋 Player Table", "📊 Charts", "🏟️ Team Summary", "🔍 Player Detail",
+     "⚖️ Compare Players", "🔬 Similar Players"]
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -606,11 +683,12 @@ with tab_team:
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_player:
     all_detail_players = sorted(df["Player"].dropna().unique().tolist())
-    sel_player = st.selectbox(
+    sel_player_raw = st.selectbox(
         "Type a name to search, then click to select",
-        [""] + all_detail_players,
+        [""] + _player_options(all_detail_players),
         key="detail_player",
     )
+    sel_player = _resolve_player(sel_player_raw)
 
     if not sel_player:
         st.info("Start typing a player name in the box above.")
@@ -764,11 +842,12 @@ with tab_compare:
     st.markdown("#### ⚖️ Player Comparison")
 
     all_cmp_players = sorted(df["Player"].dropna().unique().tolist())
+    _cmp_options = [""] + _player_options(all_cmp_players)
     sel_a_col, sel_b_col = st.columns(2)
     with sel_a_col:
-        player_a = st.selectbox("Player A", [""] + all_cmp_players, key="cmp_a")
+        player_a = _resolve_player(st.selectbox("Player A", _cmp_options, key="cmp_a"))
     with sel_b_col:
-        player_b = st.selectbox("Player B", [""] + all_cmp_players, key="cmp_b")
+        player_b = _resolve_player(st.selectbox("Player B", _cmp_options, key="cmp_b"))
 
     if not player_a or not player_b:
         st.info("Select two players above to compare.")
@@ -982,3 +1061,335 @@ with tab_compare:
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
                 )
                 st.plotly_chart(fig_traj, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 6 — Similar Players
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Feature definitions: (column, display label, default weight)
+# Style stats (traditional box score) get highest weights — they capture HOW a player
+# plays (3-pt specialist, slasher, playmaker, rim-protector) which advanced metrics flatten.
+_SIM_FEATURES = [
+    # Playing-style indicators — most important for "same type of player" matching
+    ("3PA",            "3pt Attempts", 3.0),   # 3-pt specialists vs interior scorers
+    ("AST",            "Assists",      2.5),   # playmakers vs off-ball players
+    ("TRB",            "Rebounds",     2.5),   # bigs vs wings
+    ("FTA",            "FT Attempts",  2.0),   # slashers vs jump-shooters
+    ("BLK",            "Blocks",       2.0),   # rim-protectors vs perimeter defenders
+    ("3P%",            "3pt %",        1.5),   # shooting quality
+    ("STL",            "Steals",       1.5),   # perimeter D
+    ("PTS",            "Points",       1.2),   # scoring role
+    ("TOV",            "Turnovers",    1.0),   # playmaking / ball-security
+    ("FT%",            "FT %",         0.8),   # shooting touch
+    # Physical measurements
+    ("Height_in",      "Height",       2.0),
+    ("Wingspan_in",    "Wingspan",     2.0),
+    ("Weight_lbs",     "Weight",       1.2),
+    ("ArmLength_in",   "Arm Length",   1.0),
+    # Advanced metrics (secondary — skill quality on top of role)
+    ("O-DPM",          "Off DPM",      1.5),
+    ("D-DPM",          "Def DPM",      1.5),
+    ("O-EPM",          "Off EPM",      1.5),
+    ("D-EPM",          "Def EPM",      1.5),
+    ("USG%",           "Usage %",      1.2),
+    ("composite_skill","Composite",    1.0),
+    ("WAR",            "WAR",          0.6),
+    ("Age",            "Age",          0.3),
+]
+
+
+def find_similar_players(source_df, target_name, feature_weights, n=8):
+    """
+    Returns the top-N most similar players to target_name using weighted
+    Euclidean distance on z-score-normalized features.
+    Missing values are imputed to the column mean before normalisation.
+    """
+    avail = [(col, lbl, w) for col, lbl, w in feature_weights if col in source_df.columns]
+    if not avail:
+        return pd.DataFrame()
+
+    cols   = [col for col, _, _ in avail]
+    weights = [w   for _, _,  w in avail]
+
+    pool   = source_df[source_df["Player"] != target_name].copy()
+    target = source_df[source_df["Player"] == target_name]
+    if target.empty or pool.empty:
+        return pd.DataFrame()
+
+    target_row = target.iloc[0]
+
+    # Numeric conversion + mean imputation
+    # Cast to float64 explicitly — Age is Int64 (nullable) which rejects float fillna
+    all_vals  = source_df[cols].apply(pd.to_numeric, errors="coerce").astype(float)
+    col_means = all_vals.mean()
+    col_stds  = all_vals.std().replace(0, 1)
+
+    pool_num  = pool[cols].apply(pd.to_numeric, errors="coerce").astype(float).fillna(col_means)
+    tgt_num   = (pd.to_numeric(pd.Series({c: target_row.get(c) for c in cols}), errors="coerce")
+                 .astype(float).fillna(col_means))
+
+    # Z-score normalise
+    pool_z = (pool_num - col_means) / col_stds
+    tgt_z  = (tgt_num  - col_means) / col_stds
+
+    # Weighted Euclidean distance
+    w_series  = pd.Series(dict(zip(cols, weights)))
+    distances = ((pool_z - tgt_z) ** 2).mul(w_series).sum(axis=1).pow(0.5)
+
+    pool = pool.copy()
+    pool["_dist"] = distances.values
+    # Similarity score 0–100 (100 = perfect match)
+    max_d = distances.max() if distances.max() > 0 else 1
+    pool["_similarity"] = ((1 - pool["_dist"] / max_d) * 100).round(1)
+
+    return pool.nsmallest(n, "_dist").reset_index(drop=True)
+
+
+with tab_similar:
+    st.markdown("#### 🔬 Find Similar Players")
+    st.caption(
+        "Similarity blends playing-style stats (3PA, assists, rebounds, drives, blocks) "
+        "with physical measurements and advanced ratings. A 3-point specialist matches "
+        "other shooters; a slashing big matches other interior scorers. Adjust weights below."
+    )
+
+    sim_search_col, sim_n_col = st.columns([3, 1])
+    with sim_search_col:
+        all_sim_players = sorted(df["Player"].dropna().unique().tolist())
+        sim_target = _resolve_player(
+            st.selectbox("Search player", [""] + _player_options(all_sim_players), key="sim_target")
+        )
+    with sim_n_col:
+        sim_n = st.slider("Results", min_value=5, max_value=15, value=8, key="sim_n")
+
+    # Weight controls in an expander so they don't clutter the default view
+    with st.expander("⚙️ Adjust similarity weights", expanded=False):
+        st.caption("Higher weight = this dimension matters more for matching.")
+        weight_cols = st.columns(4)
+        custom_weights = []
+        visible_features = [(col, lbl, dw) for col, lbl, dw in _SIM_FEATURES
+                            if col in df.columns]
+        for i, (col, lbl, default_w) in enumerate(visible_features):
+            with weight_cols[i % 4]:
+                w = st.slider(lbl, min_value=0.0, max_value=3.0,
+                              value=float(default_w), step=0.1,
+                              key=f"sim_w_{col}")
+                custom_weights.append((col, lbl, w))
+
+    if not sim_target:
+        st.info("Type a player name above to find their statistical twins.")
+    else:
+        active_weights = custom_weights if custom_weights else visible_features
+        target_row_sim = df[df["Player"] == sim_target]
+        if target_row_sim.empty:
+            st.error(f"Player '{sim_target}' not found in data.")
+        else:
+            target_row_sim = target_row_sim.iloc[0]
+            similar = find_similar_players(df, sim_target, active_weights, n=sim_n)
+
+            if similar.empty:
+                st.warning("Not enough data to compute similarity.")
+            else:
+                # ── Target player card ────────────────────────────────────────
+                tier_t  = target_row_sim.get("value_tier", "")
+                bg_t    = TIER_COLORS.get(tier_t, "#eeeeee")
+                fg_t    = TIER_TEXT_COLORS.get(tier_t, "#000000")
+                ht_disp = target_row_sim.get("Height_display", "")
+                ws_disp = target_row_sim.get("Wingspan_display", "")
+                wt      = target_row_sim.get("Weight_lbs")
+                # Guard against NaN — measurements missing for this player
+                ht_disp = ht_disp if isinstance(ht_disp, str) else ""
+                ws_disp = ws_disp if isinstance(ws_disp, str) else ""
+                phys_str = "  ·  ".join(filter(None, [
+                    ht_disp,
+                    f"{ws_disp} WS" if ws_disp else "",
+                    f"{int(wt)} lbs" if pd.notna(wt) else "",
+                ]))
+                # Traditional stat summary for the card
+                def _stat(col, fmt="{:.1f}"):
+                    v = target_row_sim.get(col)
+                    return fmt.format(v) if pd.notna(v) else "—"
+
+                style_line = (
+                    f"{_stat('PTS')} PTS · {_stat('TRB')} REB · {_stat('AST')} AST · "
+                    f"{_stat('STL')} STL · {_stat('BLK')} BLK · "
+                    f"{_stat('3PA')} 3PA ({_stat('3P%', '{:.1%}')} 3P%)"
+                )
+                st.markdown(
+                    f"<div style='background:#f6f8fa; border-radius:10px; padding:12px 16px; "
+                    f"margin-bottom:12px'>"
+                    f"<strong style='font-size:1.1em'>{sim_target}</strong> &nbsp;"
+                    f"<span style='background:{bg_t}; color:{fg_t}; padding:2px 9px; "
+                    f"border-radius:10px; font-size:0.8em'>{tier_t}</span> &nbsp;"
+                    f"<span style='color:#555; font-size:0.9em'>"
+                    f"{target_row_sim.get('Team','—')} · "
+                    f"Age {int(target_row_sim.get('Age')) if pd.notna(target_row_sim.get('Age')) else '—'}"
+                    + (f" · {phys_str}" if phys_str else "") +
+                    f"</span><br>"
+                    f"<span style='color:#444; font-size:0.85em'>"
+                    f"{style_line}"
+                    f" &nbsp;|&nbsp; Composite {target_row_sim.get('composite_skill','—'):.2f}"
+                    f" · WAR {target_row_sim.get('WAR','—'):.2f}"
+                    f"</span></div>",
+                    unsafe_allow_html=True,
+                )
+
+                # ── Similarity results table ──────────────────────────────────
+                st.markdown("##### Most Similar Players")
+                sim_display_cols = [
+                    "Player", "Team", "Age",
+                    "Height_display", "Wingspan_display", "Weight_lbs",
+                    # Traditional style stats
+                    "PTS", "TRB", "AST", "STL", "BLK",
+                    "3PA", "3P%", "FTA",
+                    # Advanced
+                    "composite_skill", "USG%", "WAR",
+                    "salary", "value_tier", "_similarity",
+                ]
+                sim_display_cols = [c for c in sim_display_cols if c in similar.columns]
+
+                sim_fmt = {c: "{:.1f}" for c in
+                           ("PTS", "TRB", "AST", "STL", "BLK", "TOV",
+                            "3PA", "FTA", "USG%") if c in sim_display_cols}
+                sim_fmt.update({c: "{:.2f}" for c in
+                                ("O-DPM", "D-DPM", "O-EPM", "D-EPM",
+                                 "composite_skill", "WAR") if c in sim_display_cols})
+                # Percentage stats are stored as decimals (0.374 = 37.4%)
+                sim_fmt.update({c: "{:.1%}" for c in
+                                ("3P%", "FT%") if c in sim_display_cols})
+                sim_fmt["Weight_lbs"]  = "{:.2f}"
+                sim_fmt["_similarity"] = "{:.2f}%"
+
+                col_renames = {
+                    "_similarity":    "Similarity",
+                    "composite_skill":"Composite",
+                    "Height_display": "Height",
+                    "Wingspan_display":"Wingspan",
+                    "Weight_lbs":     "Weight (lbs)",
+                }
+                # Remap format keys to post-rename names so .format() finds them
+                sim_fmt = {col_renames.get(k, k): v for k, v in sim_fmt.items()}
+
+                def _sim_bar(val):
+                    color = "#1a7f37" if val >= 80 else "#2ea44f" if val >= 65 else "#f0a500"
+                    return f"background: linear-gradient(90deg, {color}22 {val:.0f}%, transparent {val:.0f}%)"
+
+                styled_sim = (
+                    similar[sim_display_cols]
+                    .rename(columns=col_renames)
+                    .style
+                    .format(sim_fmt, na_rep="—")
+                    .applymap(_style_tier, subset=["value_tier"])
+                    .applymap(_sim_bar,    subset=["Similarity"])
+                )
+                st.dataframe(styled_sim, use_container_width=True,
+                             height=min(380, (sim_n + 1) * 38))
+
+                # ── Radar charts: target vs top match ────────────────────────
+                st.markdown("---")
+                top_match = similar.iloc[0]["Player"]
+                top_sim   = similar.iloc[0]["_similarity"]
+                st.markdown(f"##### Profile: {sim_target} vs Top Match — {top_match} "
+                            f"({top_sim:.1f}% similar)")
+
+                def _pct(series, val):
+                    if pd.isna(val):
+                        return 5.0
+                    valid = series.dropna()
+                    return (valid < float(val)).sum() / max(len(valid), 1) * 10
+
+                top_row = df[df["Player"] == top_match].iloc[0]
+
+                rad_col_a, rad_col_b = st.columns(2)
+
+                # — Style radar (traditional per-game stats) —
+                style_radar_cols = ["3PA", "AST", "TRB", "BLK", "STL", "FTA", "PTS"]
+                style_radar_cols = [c for c in style_radar_cols if c in df.columns]
+                style_radar_lbls = {
+                    "3PA": "3pt Att", "AST": "Assists", "TRB": "Rebounds",
+                    "BLK": "Blocks",  "STL": "Steals",  "FTA": "FT Att",
+                    "PTS": "Points",
+                }
+                if style_radar_cols:
+                    sl = [style_radar_lbls.get(c, c) for c in style_radar_cols]
+                    st_target = [_pct(df[c], target_row_sim.get(c)) for c in style_radar_cols]
+                    st_top    = [_pct(df[c], top_row.get(c))        for c in style_radar_cols]
+                    fig_style = go.Figure()
+                    for name, scores, color in [
+                        (sim_target, st_target, "#4a90d9"),
+                        (top_match,  st_top,    "#2ea44f"),
+                    ]:
+                        fig_style.add_trace(go.Scatterpolar(
+                            r=scores + [scores[0]],
+                            theta=sl + [sl[0]],
+                            fill="toself", name=name,
+                            line_color=color, opacity=0.65,
+                        ))
+                    fig_style.update_layout(
+                        title=dict(text="Style Profile", x=0.5, font=dict(size=13)),
+                        polar=dict(radialaxis=dict(
+                            visible=True, range=[0, 10],
+                            tickvals=[2, 4, 6, 8, 10],
+                            ticktext=["20%", "40%", "60%", "80%", "100%"],
+                        )),
+                        showlegend=True, height=400, margin=dict(t=40, b=20),
+                    )
+                    with rad_col_a:
+                        st.plotly_chart(fig_style, use_container_width=True)
+
+                # — Advanced radar (DPM/EPM/WAR) —
+                adv_radar_cols = ["composite_skill", "O-EPM", "D-EPM", "O-DPM", "D-DPM", "WAR"]
+                adv_radar_cols = [c for c in adv_radar_cols if c in df.columns]
+                adv_radar_lbls = {
+                    "composite_skill": "Composite", "WAR": "WAR",
+                    "O-EPM": "Off EPM", "D-EPM": "Def EPM",
+                    "O-DPM": "Off DPM", "D-DPM": "Def DPM",
+                }
+                if adv_radar_cols:
+                    al = [adv_radar_lbls.get(c, c) for c in adv_radar_cols]
+                    r_target = [_pct(df[c], target_row_sim.get(c)) for c in adv_radar_cols]
+                    r_top    = [_pct(df[c], top_row.get(c))        for c in adv_radar_cols]
+                    fig_sim_radar = go.Figure()
+                    for name, scores, color in [
+                        (sim_target, r_target, "#4a90d9"),
+                        (top_match,  r_top,    "#2ea44f"),
+                    ]:
+                        fig_sim_radar.add_trace(go.Scatterpolar(
+                            r=scores + [scores[0]],
+                            theta=al + [al[0]],
+                            fill="toself", name=name,
+                            line_color=color, opacity=0.65,
+                        ))
+                    fig_sim_radar.update_layout(
+                        title=dict(text="Advanced Metrics", x=0.5, font=dict(size=13)),
+                        polar=dict(radialaxis=dict(
+                            visible=True, range=[0, 10],
+                            tickvals=[2, 4, 6, 8, 10],
+                            ticktext=["20%", "40%", "60%", "80%", "100%"],
+                        )),
+                        showlegend=True, height=400, margin=dict(t=40, b=20),
+                    )
+                    with rad_col_b:
+                        st.plotly_chart(fig_sim_radar, use_container_width=True)
+
+                # ── Similarity score bar chart ────────────────────────────────
+                st.markdown("---")
+                st.markdown("##### Similarity Scores")
+                fig_scores = go.Figure(go.Bar(
+                    x=similar["_similarity"],
+                    y=similar["Player"],
+                    orientation="h",
+                    marker_color=[
+                        "#1a7f37" if v >= 80 else "#2ea44f" if v >= 65 else "#f0a500"
+                        for v in similar["_similarity"]
+                    ],
+                    text=[f"{v:.1f}%" for v in similar["_similarity"]],
+                    textposition="outside",
+                ))
+                fig_scores.update_layout(
+                    xaxis=dict(title="Similarity (%)", range=[0, 105]),
+                    height=max(300, sim_n * 36),
+                    margin=dict(t=10, b=20),
+                )
+                st.plotly_chart(fig_scores, use_container_width=True)
