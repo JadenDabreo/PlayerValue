@@ -17,7 +17,7 @@ Model
   composite_skill    = 0.5 * DARKO_DPM + 0.5 * EPM   (or DARKO_DPM if no EPM)
   projected_MP       = MP_per_game * EXPECTED_GAMES   (72-game standard season)
   WAR                = (composite_skill - (-2.0)) * projected_MP / (48 * 33.5)
-  usage_scalar       = sqrt(USG% / 20.0) clamped to [0.55, 1.00]
+  usage_scalar       = (USG% / 20.0) linear, clamped to [0.40, 1.00]
                        EPM/DPM are per-possession efficiency metrics — role players at
                        low usage post good efficiency but command lower market salaries.
                        usage_scalar adjusts fair_salary to reflect this market reality.
@@ -282,16 +282,14 @@ merged["WAR"] = (
 # EPM/DPM measure per-possession quality, not volume. A role player at 10% USG
 # posting good efficiency would never command a star's salary on the open market.
 # We apply a usage scalar to fair_salary only — WAR and composite_skill stay pure.
-#   scalar = sqrt(USG% / league_avg)  → clamped to [0.55, 1.00]
-#   10% USG → ×0.71  |  15% → ×0.87  |  20%+ → ×1.00 (no premium, only discount)
+#   scalar = (USG% / league_avg) linear → clamped to [0.40, 1.00]
+#   8% USG → ×0.40 (floor)  |  10% → ×0.50  |  15% → ×0.75  |  20%+ → ×1.00
 has_usg = merged["USG%"].notna() if "USG%" in merged.columns else pd.Series(False, index=merged.index)
 usage_scalar = pd.Series(1.0, index=merged.index)
 if has_usg.any():
     usage_scalar[has_usg] = (
         (merged.loc[has_usg, "USG%"] / LEAGUE_AVG_USG)
-        .clip(lower=0.15, upper=4.0)
-        .apply(lambda x: x ** 0.5)
-        .clip(lower=0.55, upper=1.0)   # never inflate — only discount low-usage players
+        .clip(lower=0.40, upper=1.0)   # linear — never inflate, floor at 0.40
     )
 merged["usage_scalar"] = usage_scalar.round(3)
 

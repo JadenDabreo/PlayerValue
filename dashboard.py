@@ -260,7 +260,7 @@ with st.sidebar:
     st.caption(
         "**Model**  \n"
         "Skill = DARKO DPM (38%) + EPM (62%)  \n"
-        "Usage scalar = √(USG% / 20) → [0.55, 1.00]  \n"
+        "Usage scalar = USG% / 20 (linear) → [0.40, 1.00]  \n"
         "Fair salary × usage scalar (role players discounted, stars uncapped)  \n"
         "Market rate: $6M / WAR  \n"
         "Replacement DPM: −2.0  \n"
