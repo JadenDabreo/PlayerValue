@@ -17,7 +17,7 @@ Model
   composite_skill    = 0.5 * DARKO_DPM + 0.5 * EPM   (or DARKO_DPM if no EPM)
   projected_MP       = MP_per_game * EXPECTED_GAMES   (72-game standard season)
   WAR                = (composite_skill - (-2.0)) * projected_MP / (48 * 33.5)
-  usage_scalar       = sqrt(USG% / 20.0) clamped to [0.55, 1.45]
+  usage_scalar       = sqrt(USG% / 20.0) clamped to [0.55, 1.00]
                        EPM/DPM are per-possession efficiency metrics — role players at
                        low usage post good efficiency but command lower market salaries.
                        usage_scalar adjusts fair_salary to reflect this market reality.
@@ -220,10 +220,18 @@ if not epm_data.empty:
     if "epm_usg" in merged.columns:
         darko_usg = "USG%" if "USG%" in merged.columns else None
         if darko_usg:
-            merged["USG%"] = merged["epm_usg"].fillna(merged[darko_usg])
+            # DARKO may store USG% as strings ("20.5%" or "0.205") — convert first
+            darko_usg_numeric = pd.to_numeric(
+                merged[darko_usg].astype(str).str.rstrip("%"), errors="coerce"
+            )
+            merged["USG%"] = merged["epm_usg"].fillna(darko_usg_numeric)
         else:
             merged["USG%"] = merged["epm_usg"]
         merged.drop(columns=["epm_usg"], inplace=True)
+        # Final safety: ensure numeric and convert 0-1 decimal to percentage if needed
+        merged["USG%"] = pd.to_numeric(merged["USG%"], errors="coerce")
+        if merged["USG%"].dropna().max() <= 1.0:
+            merged["USG%"] = merged["USG%"] * 100
         print(f"  USG%: {merged['USG%'].notna().sum()} players (EPM actual-season, DARKO fallback)")
 else:
     merged["EPM"]   = float("nan")
@@ -274,8 +282,8 @@ merged["WAR"] = (
 # EPM/DPM measure per-possession quality, not volume. A role player at 10% USG
 # posting good efficiency would never command a star's salary on the open market.
 # We apply a usage scalar to fair_salary only — WAR and composite_skill stay pure.
-#   scalar = sqrt(USG% / league_avg)  → clamped to [0.55, 1.45]
-#   10% USG → ×0.71  |  15% → ×0.87  |  20% → ×1.00  |  28% → ×1.18  |  35% → ×1.32
+#   scalar = sqrt(USG% / league_avg)  → clamped to [0.55, 1.00]
+#   10% USG → ×0.71  |  15% → ×0.87  |  20%+ → ×1.00 (no premium, only discount)
 has_usg = merged["USG%"].notna() if "USG%" in merged.columns else pd.Series(False, index=merged.index)
 usage_scalar = pd.Series(1.0, index=merged.index)
 if has_usg.any():
@@ -283,7 +291,7 @@ if has_usg.any():
         (merged.loc[has_usg, "USG%"] / LEAGUE_AVG_USG)
         .clip(lower=0.15, upper=4.0)
         .apply(lambda x: x ** 0.5)
-        .clip(lower=0.55, upper=1.45)
+        .clip(lower=0.55, upper=1.0)   # never inflate — only discount low-usage players
     )
 merged["usage_scalar"] = usage_scalar.round(3)
 
