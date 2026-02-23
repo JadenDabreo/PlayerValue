@@ -17,7 +17,9 @@ Model
   composite_skill    = 0.5 * DARKO_DPM + 0.5 * EPM   (or DARKO_DPM if no EPM)
   projected_MP       = MP_per_game * EXPECTED_GAMES   (72-game standard season)
   WAR                = (composite_skill - (-2.0)) * projected_MP / (48 * 33.5)
-  usage_scalar       = (USG% / 20.0) linear, clamped to [0.40, 1.00]
+  usage_scalar       = (USG% / 25.0)^2 quadratic, clamped to [0.35, 1.00]
+                       Reference is 25% (primary ball-handler). Quadratic means
+                       role players at 18% usage are penalised ~50%, not 10%.
                        EPM/DPM are per-possession efficiency metrics — role players at
                        low usage post good efficiency but command lower market salaries.
                        usage_scalar adjusts fair_salary to reflect this market reality.
@@ -45,7 +47,7 @@ EXPECTED_GAMES      = 72          # standard projected season for contract valua
 DPM_IMPROVEMENT_CAP = 1.5         # max single-year DARKO improvement applied (avoid overreacting to noise)
 DARKO_WEIGHT        = 0.5         # weight for DARKO DPM in composite skill blend
 EPM_WEIGHT          = 0.8         # weight for EPM in composite skill blend
-LEAGUE_AVG_USG      = 20.0        # approximate NBA league-average usage rate (%)
+LEAGUE_AVG_USG      = 25.0        # primary ball-handler threshold — players below this are discounted
 
 output_folder = "PlayerValue"
 os.makedirs(output_folder, exist_ok=True)
@@ -282,14 +284,18 @@ merged["WAR"] = (
 # EPM/DPM measure per-possession quality, not volume. A role player at 10% USG
 # posting good efficiency would never command a star's salary on the open market.
 # We apply a usage scalar to fair_salary only — WAR and composite_skill stay pure.
-#   scalar = (USG% / league_avg) linear → clamped to [0.40, 1.00]
-#   8% USG → ×0.40 (floor)  |  10% → ×0.50  |  15% → ×0.75  |  20%+ → ×1.00
+#   scalar = (USG% / 25)^2 quadratic → clamped to [0.35, 1.00]
+#   Reference is 25% (primary ball-handler), not league average.
+#   Quadratic compounding means the penalty grows steeply below that threshold.
+#   10% USG → ×0.35 (floor)  |  15% → ×0.36  |  18% → ×0.52  |  22% → ×0.77  |  25%+ → ×1.00
 has_usg = merged["USG%"].notna() if "USG%" in merged.columns else pd.Series(False, index=merged.index)
 usage_scalar = pd.Series(1.0, index=merged.index)
 if has_usg.any():
     usage_scalar[has_usg] = (
         (merged.loc[has_usg, "USG%"] / LEAGUE_AVG_USG)
-        .clip(lower=0.40, upper=1.0)   # linear — never inflate, floor at 0.40
+        .clip(lower=0.0, upper=1.0)
+        .apply(lambda x: x ** 2)       # quadratic — compounds steeply for low usage
+        .clip(lower=0.35, upper=1.0)   # floor at 0.35, never inflate above 1.0
     )
 merged["usage_scalar"] = usage_scalar.round(3)
 
