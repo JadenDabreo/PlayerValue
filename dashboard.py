@@ -120,13 +120,13 @@ def load_data():
 
     # Ensure numeric DPM/EPM/WAR
     for col in ("DPM", "O-DPM", "D-DPM", "EPM", "O-EPM", "D-EPM",
-                "composite_skill", "WAR", "G", "projected_MP", "USG%"):
+                "composite_skill", "WAR", "G", "projected_MP", "USG%", "usage_scalar"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # Round skill/rating columns to 2 decimal places for clean display
     for col in ("DPM", "O-DPM", "D-DPM", "DPM Improvement",
-                "EPM", "O-EPM", "D-EPM", "composite_skill", "WAR", "USG%"):
+                "EPM", "O-EPM", "D-EPM", "composite_skill", "WAR", "USG%", "usage_scalar"):
         if col in df.columns:
             df[col] = df[col].round(2)
 
@@ -260,6 +260,8 @@ with st.sidebar:
     st.caption(
         "**Model**  \n"
         "Skill = DARKO DPM (38%) + EPM (62%)  \n"
+        "Usage scalar = √(USG% / 20) → [0.55, 1.45]  \n"
+        "Fair salary × usage scalar (role players discounted)  \n"
         "Market rate: $6M / WAR  \n"
         "Replacement DPM: −2.0  \n"
         "Projected games: 72  \n"
@@ -342,7 +344,7 @@ with tab_table:
         "Player", "Team", "Age", "DPM", "EPM", "composite_skill",
         "DPM Improvement", "trajectory",
         "O-DPM", "D-DPM", "O-EPM", "D-EPM",
-        "USG%", "G", "projected_MP", "WAR",
+        "USG%", "usage_scalar", "G", "projected_MP", "WAR",
         "salary", "fair_salary", "surplus", "$/WAR", "value_tier",
     ]
     display_cols = [c for c in display_cols if c in filt.columns]
@@ -367,7 +369,7 @@ with tab_table:
 
     _float_fmt = {c: "{:.2f}" for c in
                   ("DPM", "O-DPM", "D-DPM", "DPM Improvement",
-                   "EPM", "O-EPM", "D-EPM", "composite_skill", "WAR", "USG%")
+                   "EPM", "O-EPM", "D-EPM", "composite_skill", "WAR", "USG%", "usage_scalar")
                   if c in display_cols}
     _int_fmt   = {c: "{:.0f}" for c in ("G", "projected_MP") if c in display_cols}
     styled = (

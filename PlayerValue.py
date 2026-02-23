@@ -17,7 +17,11 @@ Model
   composite_skill    = 0.5 * DARKO_DPM + 0.5 * EPM   (or DARKO_DPM if no EPM)
   projected_MP       = MP_per_game * EXPECTED_GAMES   (72-game standard season)
   WAR                = (composite_skill - (-2.0)) * projected_MP / (48 * 33.5)
-  fair_salary        = max(WAR, 0) * $6,000,000 + league_minimum
+  usage_scalar       = sqrt(USG% / 20.0) clamped to [0.55, 1.45]
+                       EPM/DPM are per-possession efficiency metrics — role players at
+                       low usage post good efficiency but command lower market salaries.
+                       usage_scalar adjusts fair_salary to reflect this market reality.
+  fair_salary        = (max(WAR, 0) * $6,000,000 * usage_scalar) + league_minimum
   surplus            = fair_salary - actual_salary   (+ underpaid / - overpaid)
   $/WAR              = actual_salary / max(WAR, 0.01)
 """
@@ -41,6 +45,7 @@ EXPECTED_GAMES      = 72          # standard projected season for contract valua
 DPM_IMPROVEMENT_CAP = 1.5         # max single-year DARKO improvement applied (avoid overreacting to noise)
 DARKO_WEIGHT        = 0.5         # weight for DARKO DPM in composite skill blend
 EPM_WEIGHT          = 0.8         # weight for EPM in composite skill blend
+LEAGUE_AVG_USG      = 20.0        # approximate NBA league-average usage rate (%)
 
 output_folder = "PlayerValue"
 os.makedirs(output_folder, exist_ok=True)
@@ -165,11 +170,18 @@ def load_epm() -> pd.DataFrame:
     path = files[0]
     print(f"  EPM    ← {path}")
     df = pd.read_excel(path, sheet_name="All Players")
-    # tot = total EPM, off = offensive EPM, def = defensive EPM
-    df = df[["player_name", "tot", "off", "def"]].copy()
-    df = df.rename(columns={"player_name": "Player", "tot": "EPM", "off": "O-EPM", "def": "D-EPM"})
+    # tot = total EPM, off = offensive EPM, def = defensive EPM, p_usg = actual-season usage rate
+    want_cols = {"player_name", "tot", "off", "def"} | ({"p_usg"} if "p_usg" in df.columns else set())
+    df = df[[c for c in df.columns if c in want_cols]].copy()
+    rename = {"player_name": "Player", "tot": "EPM", "off": "O-EPM", "def": "D-EPM", "p_usg": "epm_usg"}
+    df = df.rename(columns=rename)
     for col in ("EPM", "O-EPM", "D-EPM"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "epm_usg" in df.columns:
+        df["epm_usg"] = pd.to_numeric(df["epm_usg"], errors="coerce")
+        # EPM stores usage as a decimal (0–1); convert to percentage points if needed
+        if df["epm_usg"].dropna().max() <= 1.0:
+            df["epm_usg"] = df["epm_usg"] * 100
     print(f"  {df['EPM'].notna().sum()} players with EPM data")
     return df
 
@@ -198,9 +210,21 @@ merged = merged.merge(contracts[["_key", "salary"] + future_season_cols], on="_k
 # Merge EPM data if available
 if not epm_data.empty:
     epm_data["_key"] = epm_data["Player"].map(normalize_name)
-    merged = merged.merge(epm_data[["_key", "EPM", "O-EPM", "D-EPM"]], on="_key", how="left")
+    epm_merge_cols = ["_key", "EPM", "O-EPM", "D-EPM"]
+    if "epm_usg" in epm_data.columns:
+        epm_merge_cols.append("epm_usg")
+    merged = merged.merge(epm_data[epm_merge_cols], on="_key", how="left")
     epm_matched = merged["EPM"].notna().sum()
     print(f"  EPM matched to {epm_matched} / {len(merged)} players")
+    # Prefer EPM's actual-season USG% over DARKO's projected USG%
+    if "epm_usg" in merged.columns:
+        darko_usg = "USG%" if "USG%" in merged.columns else None
+        if darko_usg:
+            merged["USG%"] = merged["epm_usg"].fillna(merged[darko_usg])
+        else:
+            merged["USG%"] = merged["epm_usg"]
+        merged.drop(columns=["epm_usg"], inplace=True)
+        print(f"  USG%: {merged['USG%'].notna().sum()} players (EPM actual-season, DARKO fallback)")
 else:
     merged["EPM"]   = float("nan")
     merged["O-EPM"] = float("nan")
@@ -246,8 +270,25 @@ merged["WAR"] = (
     (merged["composite_skill"] - REPLACEMENT_DPM) * merged["projected_MP"] / (48 * POINTS_PER_WIN)
 ).round(2)
 
+# ── Usage-based market-value adjustment ──────────────────────────────────────
+# EPM/DPM measure per-possession quality, not volume. A role player at 10% USG
+# posting good efficiency would never command a star's salary on the open market.
+# We apply a usage scalar to fair_salary only — WAR and composite_skill stay pure.
+#   scalar = sqrt(USG% / league_avg)  → clamped to [0.55, 1.45]
+#   10% USG → ×0.71  |  15% → ×0.87  |  20% → ×1.00  |  28% → ×1.18  |  35% → ×1.32
+has_usg = merged["USG%"].notna() if "USG%" in merged.columns else pd.Series(False, index=merged.index)
+usage_scalar = pd.Series(1.0, index=merged.index)
+if has_usg.any():
+    usage_scalar[has_usg] = (
+        (merged.loc[has_usg, "USG%"] / LEAGUE_AVG_USG)
+        .clip(lower=0.15, upper=4.0)
+        .apply(lambda x: x ** 0.5)
+        .clip(lower=0.55, upper=1.45)
+    )
+merged["usage_scalar"] = usage_scalar.round(3)
+
 merged["fair_salary"] = (
-    merged["WAR"].clip(lower=0) * MARKET_RATE_PER_WIN + LEAGUE_MINIMUM
+    merged["WAR"].clip(lower=0) * MARKET_RATE_PER_WIN * merged["usage_scalar"] + LEAGUE_MINIMUM
 ).round(0)
 
 merged["surplus"] = (merged["fair_salary"] - merged["salary"]).round(0)
@@ -281,7 +322,9 @@ for i, yr_col in enumerate(future_season_cols, start=1):
     projected_war = (
         (projected_dpm - REPLACEMENT_DPM) * merged["projected_MP"] / (48 * POINTS_PER_WIN)
     ).clip(lower=0)
-    projected_fair    = (projected_war * MARKET_RATE_PER_WIN + LEAGUE_MINIMUM).round(0)
+    projected_fair = (
+        projected_war * MARKET_RATE_PER_WIN * merged["usage_scalar"] + LEAGUE_MINIMUM
+    ).round(0)
     projected_surplus = (projected_fair - merged[yr_col]).round(0)
 
     merged[f"surplus_{yr_col}"] = projected_surplus
@@ -328,7 +371,7 @@ value_cols = [
     "DPM", "O-DPM", "D-DPM", "DPM Improvement", "trajectory",
     "EPM", "O-EPM", "D-EPM",
     "composite_skill", "epm_used",
-    "USG%", "G", "projected_MP", "WAR",
+    "USG%", "usage_scalar", "G", "projected_MP", "WAR",
     "salary", "fair_salary", "surplus", "$/WAR", "value_tier",
 ]
 value_cols = [c for c in value_cols if c in merged.columns]
