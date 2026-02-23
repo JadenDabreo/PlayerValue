@@ -77,11 +77,180 @@ ATTAINABILITY_COLORS = {
     "Unknown":     "#888888",
 }
 
+# ── Archetype system ─────────────────────────────────────────────────────────
+# (archetype, position_group, importance, description)
+ARCHETYPE_META = {
+    # Guards
+    "Offensive Engine":          ("guard", "★★★", "Primary ball-handler who creates for himself and others. High usage scorer with playmaking."),
+    "Jumbo Playmaker":           ("guard", "★★★", "Wing-sized player who operates like a point guard. Rare size-skill combo."),
+    "All-Around Guard":          ("guard", "★★★", "Balanced two-way guard who contributes on both ends. Can shoot, pass, and defend."),
+    "Playmaking Guard":          ("guard", "★★",  "Pass-first guard who facilitates the offense. Moderate scoring, strong decision-making."),
+    "3-and-D Guard":             ("guard", "★★★", "Off-ball guard who spaces the floor with shooting and guards at a high level."),
+    "Slasher Guard":             ("guard", "★★",  "Gets to the basket and draws fouls. Relies on athleticism and drives over jump-shooting."),
+    "Pure Point Guard":          ("guard", "★★",  "Pass-first facilitator. Limited scoring but elite in organizing the offense."),
+    "Microwave Scorer":          ("guard", "★",   "Bench scorer who creates his own shot. Minimal defensive impact."),
+    "Shooting Specialist Guard": ("guard", "★★",  "Catch-and-shoot specialist who spaces the floor. Limited creation."),
+    "Defensive Specialist Guard":("guard", "★★",  "On-ball defender assigned to the opponent's best guard. Minimal offensive role."),
+    "Combo Guard":               ("guard", "★",   "Balanced but non-elite guard without a single dominant trait."),
+    # Wings
+    "All-Around Wing":           ("wing",  "★★★", "Elite two-way wing. Can score in multiple ways, defend multiple positions."),
+    "Modern Four":               ("wing",  "★★★", "Large wing or power forward who can shoot, drive, and defend in space."),
+    "3-and-D Plus Wing":         ("wing",  "★★★", "3-and-D wing who adds playmaking or creation beyond just catch-and-shoot."),
+    "Dribble Pass Shoot Wing":   ("wing",  "★★★", "Creative wing who can initiate offense, make plays off the dribble, and shoot."),
+    "3-and-D Wing":              ("wing",  "★★★", "Floor spacer who defends. The most in-demand role-player archetype."),
+    "Secondary Playmaker Wing":  ("wing",  "★★",  "Wing who can facilitate from the short-roll or on the perimeter. Connective passer."),
+    "Defense First Wing":        ("wing",  "★★",  "Multi-positional defender who guards 1-through-4. Offense is secondary."),
+    "3-and-Some-D Wing":         ("wing",  "★★",  "3-point shooter with adequate but not elite defensive effort."),
+    "Score First Wing":          ("wing",  "★",   "Offensive-minded wing, good scorer but defensive liability."),
+    "Shooting Specialist Wing":  ("wing",  "★",   "Catch-and-shoot only. Exists to space the floor; limited in all other areas."),
+    "Role Wing":                 ("wing",  "★",   "Complementary wing without a dominant specialization."),
+    # Bigs
+    "All-Around Big":            ("big",   "★★★", "Complete center or power forward. Can score, rebound, pass, and impact defense."),
+    "Offensive Hub":             ("big",   "★★★", "Playmaking center who operates from the elbow or short-roll. Creates for teammates."),
+    "Switchable Big":            ("big",   "★★★", "Defensive big who can guard guards/wings on the perimeter. Blocks shots and stretches floor."),
+    "Rim Protector":             ("big",   "★★",  "Deterrent at the rim. Protects the paint with shot-blocking and physical presence."),
+    "Stretch Big":               ("big",   "★★",  "Big who can shoot threes and pull the defense away from the basket."),
+    "Scoring Big":               ("big",   "★★",  "Offensively-oriented big. Scores efficiently but limited defensive impact."),
+    "Energy/Rebounding Big":     ("big",   "★",   "Hustle player who crashes the boards, sets screens, and finishes lobs. Limited skillset."),
+    "Utility Big":               ("big",   "★",   "Big who contributes in situational roles without a single defining trait."),
+}
+
+# Colors per position group (3 tones: elite / standard / specialist)
+ARCHETYPE_GROUP_COLORS = {
+    "guard": {"★★★": "#1565c0", "★★": "#1976d2", "★": "#64b5f6"},  # blues
+    "wing":  {"★★★": "#2e7d32", "★★": "#388e3c", "★": "#81c784"},  # greens
+    "big":   {"★★★": "#e65100", "★★": "#f57c00", "★": "#ffb74d"},  # oranges
+}
+
+GROUP_BADGE_COLORS = {"guard": "#1976d2", "wing": "#2e7d32", "big": "#e65100"}
+GROUP_LABELS       = {"guard": "Guard", "wing": "Wing", "big": "Big"}
+
+
+def archetype_color(archetype: str) -> str:
+    meta = ARCHETYPE_META.get(archetype)
+    if not meta:
+        return "#888888"
+    grp, importance, _ = meta
+    return ARCHETYPE_GROUP_COLORS.get(grp, {}).get(importance, "#888888")
+
+
+# ── Archetype classification ──────────────────────────────────────────────────
+def assign_archetype(row) -> tuple:
+    """
+    Returns (archetype_name, position_group) for a player row.
+    Uses height, position tag, box stats, and advanced metrics.
+    """
+    def _v(col, default=0.0):
+        v = row.get(col)
+        try:
+            f = float(v)
+            return f if not (f != f) else default   # catch NaN
+        except (TypeError, ValueError):
+            return default
+
+    pts   = _v("PTS",   8.0)
+    trb   = _v("TRB",   4.0)
+    ast   = _v("AST",   2.0)
+    blk   = _v("BLK",   0.3)
+    tpa   = _v("3PA",   2.0)
+    tppct = _v("3P%",   0.33)
+    fta   = _v("FTA",   2.0)
+    usg   = _v("USG%",  18.0)
+    ddpm  = _v("D-DPM", 0.0)
+    comp  = _v("composite_skill", 0.0)
+    ht    = _v("Height_in", 78.0) or 78.0
+    pos   = str(row.get("Position") or "").strip().upper()
+
+    # Determine position group.
+    # Only true centers are automatic bigs — PF is height-dependent because
+    # most modern PFs (Buzelis, Cameron Johnson, Camara, etc.) play like wings.
+    # Height thresholds: <77" → guard body, ≥83" (7'0") → big body, else → wing.
+    is_guard  = pos in ("PG", "SG", "G")
+    is_center = pos in ("C",)   # C-F edge cases fall through to height check
+
+    if is_guard or (not is_center and ht < 77):
+        grp = "guard"
+    elif is_center or ht >= 83:
+        grp = "big"
+    else:
+        grp = "wing"
+
+    # Jumbo Playmaker — wing-sized body with guard offensive skill
+    if ht >= 77 and ht < 83 and ast >= 5 and usg >= 24:
+        return "Jumbo Playmaker", "guard"
+
+    # ── Guards ────────────────────────────────────────────────────────────────
+    if grp == "guard":
+        if usg >= 27 and pts >= 18:   # high usage + high scoring — AST is secondary
+            return "Offensive Engine", "guard"
+        if ast >= 6 and usg <= 23 and pts <= 17:
+            return "Pure Point Guard", "guard"
+        if ast >= 4 and ddpm >= 0.5 and tpa >= 2.5 and usg <= 27:
+            return "All-Around Guard", "guard"
+        if tpa >= 4 and tppct >= 0.35 and ddpm >= 0.2 and usg <= 22:
+            return "3-and-D Guard", "guard"
+        if fta >= 4.0 and tpa <= 3.5 and usg >= 18:
+            return "Slasher Guard", "guard"
+        if ast >= 4 and tpa >= 2.5 and usg <= 25:
+            return "Playmaking Guard", "guard"
+        if tpa >= 5 and tppct >= 0.37 and ast <= 3:
+            return "Shooting Specialist Guard", "guard"
+        if ddpm >= 1.5 and pts <= 9:
+            return "Defensive Specialist Guard", "guard"
+        if pts >= 14 and ast <= 3 and ddpm < -0.5:
+            return "Microwave Scorer", "guard"
+        return "Combo Guard", "guard"
+
+    # ── Wings ─────────────────────────────────────────────────────────────────
+    if grp == "wing":
+        if comp >= 2.0 and ddpm >= 0.5 and pts >= 16 and ast >= 2:
+            return "All-Around Wing", "wing"
+        if ht >= 80 and usg >= 22 and pts >= 15 and (ast >= 3 or trb >= 7):
+            return "Modern Four", "wing"
+        if tpa >= 3.5 and ddpm >= 0.8 and ast >= 2.5:
+            return "3-and-D Plus Wing", "wing"
+        if tpa >= 3.5 and ddpm >= 0.3 and usg <= 20:
+            return "3-and-D Wing", "wing"
+        if ast >= 3.5 and tpa >= 2.5 and usg >= 18:
+            return "Dribble Pass Shoot Wing", "wing"
+        if ast >= 3.5 and ddpm >= 0 and usg <= 18:
+            return "Secondary Playmaker Wing", "wing"
+        if ddpm >= 1.2 and pts <= 11:
+            return "Defense First Wing", "wing"
+        if tpa >= 3.0 and ddpm >= -0.5 and usg <= 19:
+            return "3-and-Some-D Wing", "wing"
+        if pts >= 14 and ddpm < 0:
+            return "Score First Wing", "wing"
+        if tpa >= 4 and ast <= 2.5:
+            return "Shooting Specialist Wing", "wing"
+        return "Role Wing", "wing"
+
+    # ── Bigs ──────────────────────────────────────────────────────────────────
+    if trb >= 8 and pts >= 16 and (ast >= 3 or blk >= 1.5) and comp >= 0.5:
+        return "All-Around Big", "big"
+    if ast >= 4 and pts >= 12 and trb >= 6:
+        return "Offensive Hub", "big"
+    # Rim Protector first: elite D-DPM + rim presence, low 3PA (stays near basket)
+    if (blk >= 1.5 and ddpm >= 2.0) or (blk >= 2.0 and trb >= 7):
+        return "Rim Protector", "big"
+    # Switchable Big: defensive impact + perimeter shooting (can guard on the wing)
+    if blk >= 1.0 and ddpm >= 1.0 and tpa >= 2.0:
+        return "Switchable Big", "big"
+    if tpa >= 3 and trb >= 4:
+        return "Stretch Big", "big"
+    if pts >= 12 and trb >= 5:
+        return "Scoring Big", "big"
+    if trb >= 7 and pts <= 10:
+        return "Energy/Rebounding Big", "big"
+    return "Utility Big", "big"
+
+
 # Known aliases → canonical name in the dataset.
 # Add entries here when a player is commonly searched by a different name.
 PLAYER_ALIASES = {
     "Nah'Shon Hyland": "Bones Hyland",
     "Nahshon Hyland":  "Bones Hyland",
+    "Carlton Carrington": "Bub Carrington",
 }
 
 
@@ -276,6 +445,11 @@ if df is None:
     st.error("No data found. Run `PlayerValue.py` first to generate data.")
     st.stop()
 
+# Assign archetypes (fast — runs on every load, not cached separately)
+_archetype_results = df.apply(assign_archetype, axis=1)
+df["archetype"]       = _archetype_results.apply(lambda x: x[0])
+df["position_group"]  = _archetype_results.apply(lambda x: x[1])
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 🏀 NBA Contract Value")
@@ -408,9 +582,9 @@ c6.metric("Replacement",     int(tc.get("Replacement Level", 0)))
 st.markdown("---")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_table, tab_charts, tab_team, tab_player, tab_compare, tab_similar = st.tabs(
+tab_table, tab_charts, tab_team, tab_player, tab_compare, tab_similar, tab_archetypes = st.tabs(
     ["📋 Player Table", "📊 Charts", "🏟️ Team Summary", "🔍 Player Detail",
-     "⚖️ Compare Players", "🔬 Similar Players"]
+     "⚖️ Compare Players", "🔬 Similar Players", "🎯 Archetypes"]
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1393,3 +1567,225 @@ with tab_similar:
                     margin=dict(t=10, b=20),
                 )
                 st.plotly_chart(fig_scores, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 7 — Archetypes
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_archetypes:
+    st.markdown("#### 🎯 Player Archetypes")
+    st.caption(
+        "Each player is automatically classified into an archetype based on their "
+        "box stats, advanced metrics, physical profile, and usage. "
+        "Guards are blue · Wings are green · Bigs are orange."
+    )
+
+    # ── Summary cards ─────────────────────────────────────────────────────────
+    n_guards = (df["position_group"] == "guard").sum()
+    n_wings  = (df["position_group"] == "wing").sum()
+    n_bigs   = (df["position_group"] == "big").sum()
+    c_g, c_w, c_b, _ = st.columns(4)
+    c_g.metric("Guards",  n_guards)
+    c_w.metric("Wings",   n_wings)
+    c_b.metric("Bigs",    n_bigs)
+
+    # ── Distribution charts ───────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("##### Archetype Distribution")
+    dist_cols = st.columns(3)
+    for col_idx, (grp, label, base_color) in enumerate([
+        ("guard", "Guards", "#1976d2"),
+        ("wing",  "Wings",  "#388e3c"),
+        ("big",   "Bigs",   "#f57c00"),
+    ]):
+        grp_df = df[df["position_group"] == grp]
+        counts = (
+            grp_df["archetype"].value_counts()
+            .reset_index()
+            .rename(columns={"index": "archetype", "archetype": "count",
+                              "count": "count"})
+        )
+        # pandas value_counts returns differently in newer versions
+        if "archetype" not in counts.columns:
+            counts.columns = ["archetype", "count"]
+
+        colors_dist = [archetype_color(a) for a in counts["archetype"]]
+        fig_dist = go.Figure(go.Bar(
+            x=counts["count"],
+            y=counts["archetype"],
+            orientation="h",
+            marker_color=colors_dist,
+            text=counts["count"],
+            textposition="outside",
+        ))
+        fig_dist.update_layout(
+            title=dict(text=label, x=0.5, font=dict(size=13, color=base_color)),
+            xaxis=dict(title="Players", showgrid=False),
+            yaxis=dict(autorange="reversed"),
+            height=max(220, len(counts) * 32 + 60),
+            margin=dict(t=40, b=10, l=10, r=40),
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+        with dist_cols[col_idx]:
+            st.plotly_chart(fig_dist, use_container_width=True)
+
+    # ── Player search + filters ───────────────────────────────────────────────
+    st.markdown("---")
+    arc_search_col, arc_f1, arc_f2, arc_f3 = st.columns([1.5, 1, 2, 1])
+    with arc_search_col:
+        arc_all_players = sorted(df["Player"].dropna().unique().tolist())
+        arc_player_raw = st.selectbox(
+            "Search Player", [""] + _player_options(arc_all_players), key="arc_player"
+        )
+        arc_player = _resolve_player(arc_player_raw)
+    with arc_f1:
+        grp_filter = st.multiselect(
+            "Position Group",
+            ["guard", "wing", "big"],
+            default=["guard", "wing", "big"],
+            format_func=lambda x: GROUP_LABELS[x],
+            key="arc_grp",
+        )
+    with arc_f2:
+        all_archetypes = sorted(df["archetype"].dropna().unique().tolist())
+        arc_filter = st.multiselect(
+            "Archetype", all_archetypes, default=[], key="arc_type",
+            placeholder="All archetypes",
+        )
+    with arc_f3:
+        arc_tier_filter = st.multiselect(
+            "Value Tier", TIER_ORDER,
+            default=[t for t in TIER_ORDER if t in df["value_tier"].values],
+            key="arc_tier",
+        )
+
+    # If a player is searched, show their card first then reset filters to show peers
+    if arc_player:
+        arc_player_row = df[df["Player"] == arc_player]
+        if not arc_player_row.empty:
+            arc_player_row = arc_player_row.iloc[0]
+            p_arch  = arc_player_row.get("archetype", "—")
+            p_grp   = arc_player_row.get("position_group", "")
+            p_tier  = arc_player_row.get("value_tier", "")
+            p_color = archetype_color(p_arch)
+            grp_color = GROUP_BADGE_COLORS.get(p_grp, "#888")
+            tier_bg = TIER_COLORS.get(p_tier, "#eee")
+            tier_fg = TIER_TEXT_COLORS.get(p_tier, "#000")
+
+            def _ps(col, fmt="{:.1f}"):
+                v = arc_player_row.get(col)
+                try:
+                    return fmt.format(float(v)) if pd.notna(v) else "—"
+                except (TypeError, ValueError):
+                    return "—"
+
+            st.markdown(
+                f"<div style='background:#f6f8fa; border-radius:10px; padding:14px 18px; "
+                f"margin-bottom:12px; border-left:4px solid {p_color}'>"
+                f"<strong style='font-size:1.15em; color:#111'>{arc_player}</strong> &nbsp;"
+                f"<span style='background:{p_color}22; color:{p_color}; padding:2px 10px; "
+                f"border-radius:10px; font-size:0.85em; font-weight:600'>{p_arch}</span> &nbsp;"
+                f"<span style='background:{grp_color}22; color:{grp_color}; padding:2px 8px; "
+                f"border-radius:8px; font-size:0.8em'>{GROUP_LABELS.get(p_grp,'')}</span> &nbsp;"
+                f"<span style='background:{tier_bg}; color:{tier_fg}; padding:2px 9px; "
+                f"border-radius:10px; font-size:0.8em'>{p_tier}</span><br>"
+                f"<span style='color:#555; font-size:0.88em'>"
+                f"{arc_player_row.get('Team','—')} · "
+                f"Age {int(arc_player_row['Age']) if pd.notna(arc_player_row.get('Age')) else '—'} · "
+                f"{_ps('PTS')} PTS · {_ps('TRB')} REB · {_ps('AST')} AST · "
+                f"{_ps('BLK')} BLK · {_ps('3PA')} 3PA · {_ps('3P%','{:.1%}')} 3P% · "
+                f"USG {_ps('USG%')}% · WAR {_ps('WAR','{:.2f}')}"
+                f"</span></div>",
+                unsafe_allow_html=True,
+            )
+
+            # Show peers: same archetype, different player
+            st.markdown(f"**Other {p_arch}s in the league:**")
+
+    arc_df = df[df["position_group"].isin(grp_filter)].copy()
+    if arc_player:
+        # When a player is searched, show their archetype peers (excluding themselves)
+        p_arch_val = df[df["Player"] == arc_player]["archetype"].iloc[0] if not df[df["Player"] == arc_player].empty else None
+        if p_arch_val:
+            arc_df = arc_df[arc_df["archetype"] == p_arch_val]
+        arc_df = arc_df[arc_df["Player"] != arc_player]
+    elif arc_filter:
+        arc_df = arc_df[arc_df["archetype"].isin(arc_filter)]
+    arc_df = arc_df[arc_df["value_tier"].isin(arc_tier_filter)]
+
+    # Sort: position group order, then by WAR desc
+    grp_order = {"guard": 0, "wing": 1, "big": 2}
+    arc_df["_grp_sort"] = arc_df["position_group"].map(grp_order)
+    arc_df = arc_df.sort_values(["_grp_sort", "WAR"], ascending=[True, False])
+
+    # ── Player table ──────────────────────────────────────────────────────────
+    st.markdown(f"##### Players ({len(arc_df)})")
+
+    arc_display_cols = [
+        "Player", "Team", "Age", "position_group", "archetype",
+        "PTS", "TRB", "AST", "BLK", "3PA", "3P%",
+        "USG%", "WAR", "composite_skill",
+        "salary", "fair_salary", "value_tier",
+    ]
+    arc_display_cols = [c for c in arc_display_cols if c in arc_df.columns]
+
+    arc_fmt = {c: "{:.1f}" for c in ("PTS", "TRB", "AST", "BLK", "3PA", "USG%")
+               if c in arc_display_cols}
+    arc_fmt.update({c: "{:.2f}" for c in ("WAR", "composite_skill")
+                    if c in arc_display_cols})
+    arc_fmt.update({c: "{:.1%}" for c in ("3P%",) if c in arc_display_cols})
+
+    arc_col_renames = {
+        "position_group": "Group",
+        "archetype":      "Archetype",
+        "composite_skill":"Composite",
+    }
+    arc_fmt = {arc_col_renames.get(k, k): v for k, v in arc_fmt.items()}
+
+    def _style_group(val):
+        color = GROUP_BADGE_COLORS.get(val, "#888888")
+        return f"background-color:{color}22; color:{color}; font-weight:600"
+
+    def _style_archetype(val):
+        color = archetype_color(val)
+        return f"background-color:{color}22; color:{color}; font-weight:500"
+
+    styled_arc = (
+        arc_df[arc_display_cols]
+        .rename(columns=arc_col_renames)
+        .style
+        .format(arc_fmt, na_rep="—")
+        .applymap(_style_group,     subset=["Group"])
+        .applymap(_style_archetype, subset=["Archetype"])
+        .applymap(_style_tier,      subset=["value_tier"])
+    )
+    st.dataframe(styled_arc, use_container_width=True,
+                 height=min(600, (len(arc_df) + 1) * 38))
+
+    # ── Archetype glossary ────────────────────────────────────────────────────
+    st.markdown("---")
+    with st.expander("📖 Archetype Glossary", expanded=False):
+        for grp_key, grp_label, grp_color in [
+            ("guard", "Guards", "#1976d2"),
+            ("wing",  "Wings",  "#388e3c"),
+            ("big",   "Bigs",   "#f57c00"),
+        ]:
+            st.markdown(
+                f"<span style='color:{grp_color}; font-weight:700; "
+                f"font-size:1.05em'>{grp_label}</span>",
+                unsafe_allow_html=True,
+            )
+            for name, (meta_grp, importance, desc) in ARCHETYPE_META.items():
+                if meta_grp != grp_key:
+                    continue
+                color = archetype_color(name)
+                st.markdown(
+                    f"<div style='margin:4px 0 4px 12px'>"
+                    f"<span style='background:{color}22; color:{color}; "
+                    f"padding:1px 8px; border-radius:8px; font-weight:600; "
+                    f"font-size:0.85em'>{name}</span> "
+                    f"<span style='color:#888; font-size:0.8em'>{importance}</span> "
+                    f"<span style='color:#555; font-size:0.85em'>— {desc}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )

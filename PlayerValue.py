@@ -58,6 +58,7 @@ os.makedirs(output_folder, exist_ok=True)
 # Key: normalized alias (lowercase, no accents), Value: canonical display name.
 NAME_OVERRIDES = {
     "nah'shon hyland": "Bones Hyland",
+    "Carlton Carrington": "Bub Carrington",
 }
 
 
