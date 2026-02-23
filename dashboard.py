@@ -7,6 +7,9 @@ Reads the Excel produced by PlayerValue.py (run that first).
 import glob
 import os
 import re
+import subprocess
+import sys
+from datetime import datetime
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -264,6 +267,41 @@ with st.sidebar:
         "**Yr 2+**: NBA age curve  \n"
         "(peak ≈ age 27, growth before, decline after)"
     )
+
+    st.markdown("---")
+    # ── Data freshness ────────────────────────────────────────────────────────
+    darko_files = sorted(
+        glob.glob(os.path.join("DARKO_stats", "darko_talent_processed_*.xlsx")), reverse=True
+    )
+    if darko_files:
+        mtime = os.path.getmtime(darko_files[0])
+        st.caption(
+            f"**DARKO last updated:**  \n"
+            f"{datetime.fromtimestamp(mtime).strftime('%b %d, %Y  %I:%M %p')}"
+        )
+    else:
+        st.caption("**DARKO:** no data file found — run `DARKO.py` first")
+
+    if st.button("🔄 Refresh DARKO Data",
+                 help="Re-scrapes DARKO projections (~1-2 min) then rebuilds player values."):
+        py = sys.executable
+        cwd = os.path.dirname(os.path.abspath(__file__))
+
+        with st.spinner("Scraping DARKO projections…"):
+            r1 = subprocess.run([py, "DARKO.py"], capture_output=True, text=True, cwd=cwd)
+        if r1.returncode != 0:
+            st.error(f"DARKO scrape failed:\n```\n{r1.stderr[-2000:]}\n```")
+            st.stop()
+
+        with st.spinner("Rebuilding player values…"):
+            r2 = subprocess.run([py, "PlayerValue.py"], capture_output=True, text=True, cwd=cwd)
+        if r2.returncode != 0:
+            st.error(f"PlayerValue rebuild failed:\n```\n{r2.stderr[-2000:]}\n```")
+            st.stop()
+
+        st.cache_data.clear()
+        st.success("✅ Data refreshed!")
+        st.rerun()
 
 # ── Filter ────────────────────────────────────────────────────────────────────
 filt = df.copy()
