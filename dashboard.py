@@ -88,10 +88,10 @@ ARCHETYPE_META = {
     "3-and-D Guard":             ("guard", "★★★", "Off-ball guard who spaces the floor with shooting and guards at a high level."),
     "Slasher Guard":             ("guard", "★★",  "Gets to the basket and draws fouls. Relies on athleticism and drives over jump-shooting."),
     "Pure Point Guard":          ("guard", "★★",  "Pass-first facilitator. Limited scoring but elite in organizing the offense."),
-    "Microwave Scorer":          ("guard", "★",   "Bench scorer who creates his own shot. Minimal defensive impact."),
     "Shooting Specialist Guard": ("guard", "★★",  "Catch-and-shoot specialist who spaces the floor. Limited creation."),
     "Defensive Specialist Guard":("guard", "★★",  "On-ball defender assigned to the opponent's best guard. Minimal offensive role."),
     "Combo Guard":               ("guard", "★",   "Balanced but non-elite guard without a single dominant trait."),
+    "Microwave Scorer":          ("guard", "★",   "Bench scorer who creates his own shot. Minimal defensive impact."),
     # Wings
     "All-Around Wing":           ("wing",  "★★★", "Elite two-way wing. Can score in multiple ways, defend multiple positions."),
     "Modern Four":               ("wing",  "★★★", "Large wing or power forward who can shoot, drive, and defend in space."),
@@ -135,16 +135,17 @@ def archetype_color(archetype: str) -> str:
 
 
 # ── Archetype classification ──────────────────────────────────────────────────
-def assign_archetype(row) -> tuple:
+def assign_archetypes(row) -> tuple:
     """
-    Returns (archetype_name, position_group) for a player row.
-    Uses height, position tag, box stats, and advanced metrics.
+    Returns (primary_archetype, position_group, all_matching_archetypes).
+    Evaluates ALL rules so players that qualify for multiple roles show every tag.
+    Primary = first matching rule (highest priority for that group).
     """
     def _v(col, default=0.0):
         v = row.get(col)
         try:
             f = float(v)
-            return f if not (f != f) else default   # catch NaN
+            return f if not (f != f) else default
         except (TypeError, ValueError):
             return default
 
@@ -161,12 +162,8 @@ def assign_archetype(row) -> tuple:
     ht    = _v("Height_in", 78.0) or 78.0
     pos   = str(row.get("Position") or "").strip().upper()
 
-    # Determine position group.
-    # Only true centers are automatic bigs — PF is height-dependent because
-    # most modern PFs (Buzelis, Cameron Johnson, Camara, etc.) play like wings.
-    # Height thresholds: <77" → guard body, ≥83" (7'0") → big body, else → wing.
     is_guard  = pos in ("PG", "SG", "G")
-    is_center = pos in ("C",)   # C-F edge cases fall through to height check
+    is_center = pos in ("C",)
 
     if is_guard or (not is_center and ht < 77):
         grp = "guard"
@@ -175,74 +172,87 @@ def assign_archetype(row) -> tuple:
     else:
         grp = "wing"
 
-    # Jumbo Playmaker — wing-sized body with guard offensive skill
+    matches = []
+
+    # Cross-group: Jumbo Playmaker (wing body, guard creation)
     if ht >= 77 and ht < 83 and ast >= 5 and usg >= 24:
-        return "Jumbo Playmaker", "guard"
+        matches.append("Jumbo Playmaker")
 
     # ── Guards ────────────────────────────────────────────────────────────────
     if grp == "guard":
-        if usg >= 27 and pts >= 18:   # high usage + high scoring — AST is secondary
-            return "Offensive Engine", "guard"
+        if usg >= 27 and pts >= 18:
+            matches.append("Offensive Engine")
         if ast >= 6 and usg <= 23 and pts <= 17:
-            return "Pure Point Guard", "guard"
+            matches.append("Pure Point Guard")
         if ast >= 4 and ddpm >= 0.5 and tpa >= 2.5 and usg <= 27:
-            return "All-Around Guard", "guard"
+            matches.append("All-Around Guard")
         if tpa >= 4 and tppct >= 0.35 and ddpm >= 0.2 and usg <= 22:
-            return "3-and-D Guard", "guard"
+            matches.append("3-and-D Guard")
         if fta >= 4.0 and tpa <= 3.5 and usg >= 18:
-            return "Slasher Guard", "guard"
+            matches.append("Slasher Guard")
         if ast >= 4 and tpa >= 2.5 and usg <= 25:
-            return "Playmaking Guard", "guard"
+            matches.append("Playmaking Guard")
         if tpa >= 5 and tppct >= 0.37 and ast <= 3:
-            return "Shooting Specialist Guard", "guard"
+            matches.append("Shooting Specialist Guard")
         if ddpm >= 1.5 and pts <= 9:
-            return "Defensive Specialist Guard", "guard"
+            matches.append("Defensive Specialist Guard")
         if pts >= 14 and ast <= 3 and ddpm < -0.5:
-            return "Microwave Scorer", "guard"
-        return "Combo Guard", "guard"
+            matches.append("Microwave Scorer")
+        if not matches:
+            matches.append("Combo Guard")
 
     # ── Wings ─────────────────────────────────────────────────────────────────
-    if grp == "wing":
+    elif grp == "wing":
         if comp >= 2.0 and ddpm >= 0.5 and pts >= 16 and ast >= 2:
-            return "All-Around Wing", "wing"
+            matches.append("All-Around Wing")
         if ht >= 80 and usg >= 22 and pts >= 15 and (ast >= 3 or trb >= 7):
-            return "Modern Four", "wing"
+            matches.append("Modern Four")
         if tpa >= 3.5 and ddpm >= 0.8 and ast >= 2.5:
-            return "3-and-D Plus Wing", "wing"
+            matches.append("3-and-D Plus Wing")
         if tpa >= 3.5 and ddpm >= 0.3 and usg <= 20:
-            return "3-and-D Wing", "wing"
+            matches.append("3-and-D Wing")
         if ast >= 3.5 and tpa >= 2.5 and usg >= 18:
-            return "Dribble Pass Shoot Wing", "wing"
+            matches.append("Dribble Pass Shoot Wing")
         if ast >= 3.5 and ddpm >= 0 and usg <= 18:
-            return "Secondary Playmaker Wing", "wing"
+            matches.append("Secondary Playmaker Wing")
         if ddpm >= 1.2 and pts <= 11:
-            return "Defense First Wing", "wing"
+            matches.append("Defense First Wing")
         if tpa >= 3.0 and ddpm >= -0.5 and usg <= 19:
-            return "3-and-Some-D Wing", "wing"
+            matches.append("3-and-Some-D Wing")
         if pts >= 14 and ddpm < 0:
-            return "Score First Wing", "wing"
+            matches.append("Score First Wing")
         if tpa >= 4 and ast <= 2.5:
-            return "Shooting Specialist Wing", "wing"
-        return "Role Wing", "wing"
+            matches.append("Shooting Specialist Wing")
+        if not matches:
+            matches.append("Role Wing")
 
     # ── Bigs ──────────────────────────────────────────────────────────────────
-    if trb >= 8 and pts >= 16 and (ast >= 3 or blk >= 1.5) and comp >= 0.5:
-        return "All-Around Big", "big"
-    if ast >= 4 and pts >= 12 and trb >= 6:
-        return "Offensive Hub", "big"
-    # Rim Protector first: elite D-DPM + rim presence, low 3PA (stays near basket)
-    if (blk >= 1.5 and ddpm >= 2.0) or (blk >= 2.0 and trb >= 7):
-        return "Rim Protector", "big"
-    # Switchable Big: defensive impact + perimeter shooting (can guard on the wing)
-    if blk >= 1.0 and ddpm >= 1.0 and tpa >= 2.0:
-        return "Switchable Big", "big"
-    if tpa >= 3 and trb >= 4:
-        return "Stretch Big", "big"
-    if pts >= 12 and trb >= 5:
-        return "Scoring Big", "big"
-    if trb >= 7 and pts <= 10:
-        return "Energy/Rebounding Big", "big"
-    return "Utility Big", "big"
+    else:
+        if trb >= 8 and pts >= 16 and (ast >= 3 or blk >= 1.5) and comp >= 0.5:
+            matches.append("All-Around Big")
+        if ast >= 4 and pts >= 12 and trb >= 6:
+            matches.append("Offensive Hub")
+        if (blk >= 1.5 and ddpm >= 2.0) or (blk >= 2.0 and trb >= 7):
+            matches.append("Rim Protector")
+        if blk >= 1.0 and ddpm >= 1.0 and tpa >= 2.0:
+            matches.append("Switchable Big")
+        if tpa >= 3 and trb >= 4:
+            matches.append("Stretch Big")
+        if pts >= 12 and trb >= 5:
+            matches.append("Scoring Big")
+        if trb >= 7 and pts <= 10:
+            matches.append("Energy/Rebounding Big")
+        if not matches:
+            matches.append("Utility Big")
+
+    # Deduplicate while preserving priority order
+    seen, unique = set(), []
+    for m in matches:
+        if m not in seen:
+            seen.add(m)
+            unique.append(m)
+
+    return unique[0], grp, unique
 
 
 # Known aliases → canonical name in the dataset.
@@ -446,9 +456,10 @@ if df is None:
     st.stop()
 
 # Assign archetypes (fast — runs on every load, not cached separately)
-_archetype_results = df.apply(assign_archetype, axis=1)
+_archetype_results = df.apply(assign_archetypes, axis=1)
 df["archetype"]       = _archetype_results.apply(lambda x: x[0])
 df["position_group"]  = _archetype_results.apply(lambda x: x[1])
+df["archetype_all"]   = _archetype_results.apply(lambda x: x[2])
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -1664,13 +1675,26 @@ with tab_archetypes:
         arc_player_row = df[df["Player"] == arc_player]
         if not arc_player_row.empty:
             arc_player_row = arc_player_row.iloc[0]
-            p_arch  = arc_player_row.get("archetype", "—")
+            p_arch     = arc_player_row.get("archetype", "—")
+            p_all_archs = arc_player_row.get("archetype_all", [])
+            if not isinstance(p_all_archs, list):
+                p_all_archs = [p_arch]
             p_grp   = arc_player_row.get("position_group", "")
             p_tier  = arc_player_row.get("value_tier", "")
             p_color = archetype_color(p_arch)
             grp_color = GROUP_BADGE_COLORS.get(p_grp, "#888")
             tier_bg = TIER_COLORS.get(p_tier, "#eee")
             tier_fg = TIER_TEXT_COLORS.get(p_tier, "#000")
+
+            # Build secondary archetype badges (outlined chips)
+            secondary_badges_html = ""
+            for sec_arch in p_all_archs[1:]:
+                sec_color = archetype_color(sec_arch)
+                secondary_badges_html += (
+                    f"<span style='border:1px solid {sec_color}; color:{sec_color}; "
+                    f"padding:2px 9px; border-radius:10px; font-size:0.82em; "
+                    f"font-weight:500'>{sec_arch}</span> &nbsp;"
+                )
 
             def _ps(col, fmt="{:.1f}"):
                 v = arc_player_row.get(col)
@@ -1685,6 +1709,7 @@ with tab_archetypes:
                 f"<strong style='font-size:1.15em; color:#111'>{arc_player}</strong> &nbsp;"
                 f"<span style='background:{p_color}22; color:{p_color}; padding:2px 10px; "
                 f"border-radius:10px; font-size:0.85em; font-weight:600'>{p_arch}</span> &nbsp;"
+                + secondary_badges_html +
                 f"<span style='background:{grp_color}22; color:{grp_color}; padding:2px 8px; "
                 f"border-radius:8px; font-size:0.8em'>{GROUP_LABELS.get(p_grp,'')}</span> &nbsp;"
                 f"<span style='background:{tier_bg}; color:{tier_fg}; padding:2px 9px; "
@@ -1699,46 +1724,55 @@ with tab_archetypes:
                 unsafe_allow_html=True,
             )
 
-            # Show peers: same archetype, different player
-            st.markdown(f"**Other {p_arch}s in the league:**")
+            # Show peers: any player sharing the primary archetype
+            st.markdown(f"**Other players with {p_arch} traits:**")
 
-    arc_df = df[df["position_group"].isin(grp_filter)].copy()
+    # Default to all when nothing is selected
+    _grp_filter  = grp_filter  or ["guard", "wing", "big"]
+    _tier_filter = arc_tier_filter or TIER_ORDER
+
+    arc_df = df[df["position_group"].isin(_grp_filter)].copy()
     if arc_player:
-        # When a player is searched, show their archetype peers (excluding themselves)
+        # When a player is searched, show peers who share the primary archetype
+        # (match against archetype_all so multi-role players are included)
         p_arch_val = df[df["Player"] == arc_player]["archetype"].iloc[0] if not df[df["Player"] == arc_player].empty else None
         if p_arch_val:
-            arc_df = arc_df[arc_df["archetype"] == p_arch_val]
+            arc_df = arc_df[arc_df["archetype_all"].apply(
+                lambda x: p_arch_val in x if isinstance(x, list) else x == p_arch_val
+            )]
         arc_df = arc_df[arc_df["Player"] != arc_player]
     elif arc_filter:
         arc_df = arc_df[arc_df["archetype"].isin(arc_filter)]
-    arc_df = arc_df[arc_df["value_tier"].isin(arc_tier_filter)]
+    arc_df = arc_df[arc_df["value_tier"].isin(_tier_filter)]
 
     # Sort: position group order, then by WAR desc
     grp_order = {"guard": 0, "wing": 1, "big": 2}
     arc_df["_grp_sort"] = arc_df["position_group"].map(grp_order)
     arc_df = arc_df.sort_values(["_grp_sort", "WAR"], ascending=[True, False])
 
+    # Build secondary roles column (archetypes beyond the primary)
+    arc_df["secondary_roles"] = arc_df["archetype_all"].apply(
+        lambda x: " · ".join(x[1:]) if isinstance(x, list) and len(x) > 1 else ""
+    )
+
     # ── Player table ──────────────────────────────────────────────────────────
     st.markdown(f"##### Players ({len(arc_df)})")
 
     arc_display_cols = [
-        "Player", "Team", "Age", "position_group", "archetype",
-        "PTS", "TRB", "AST", "BLK", "3PA", "3P%",
-        "USG%", "WAR", "composite_skill",
+        "Player", "Team", "Age", "position_group", "archetype", "secondary_roles",
+        "WAR", "composite_skill",
         "salary", "fair_salary", "value_tier",
     ]
     arc_display_cols = [c for c in arc_display_cols if c in arc_df.columns]
 
-    arc_fmt = {c: "{:.1f}" for c in ("PTS", "TRB", "AST", "BLK", "3PA", "USG%")
+    arc_fmt = {c: "{:.2f}" for c in ("WAR", "composite_skill")
                if c in arc_display_cols}
-    arc_fmt.update({c: "{:.2f}" for c in ("WAR", "composite_skill")
-                    if c in arc_display_cols})
-    arc_fmt.update({c: "{:.1%}" for c in ("3P%",) if c in arc_display_cols})
 
     arc_col_renames = {
-        "position_group": "Group",
-        "archetype":      "Archetype",
-        "composite_skill":"Composite",
+        "position_group":  "Group",
+        "archetype":       "Archetype",
+        "secondary_roles": "Also",
+        "composite_skill": "Composite",
     }
     arc_fmt = {arc_col_renames.get(k, k): v for k, v in arc_fmt.items()}
 
@@ -1759,8 +1793,12 @@ with tab_archetypes:
         .applymap(_style_archetype, subset=["Archetype"])
         .applymap(_style_tier,      subset=["value_tier"])
     )
-    st.dataframe(styled_arc, use_container_width=True,
-                 height=min(600, (len(arc_df) + 1) * 38))
+    st.dataframe(
+        styled_arc,
+        use_container_width=True,
+        height=min(600, (len(arc_df) + 1) * 38),
+        column_config={"Also": st.column_config.TextColumn("Also", width="large")},
+    )
 
     # ── Archetype glossary ────────────────────────────────────────────────────
     st.markdown("---")
