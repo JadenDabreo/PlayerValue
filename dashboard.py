@@ -606,8 +606,8 @@ with tab_table:
         "Player", "Team", "Age", "DPM", "EPM", "composite_skill",
         "DPM Improvement", "trajectory",
         "O-DPM", "D-DPM", "O-EPM", "D-EPM",
-        "USG%", "usage_scalar", "G", "projected_MP", "WAR",
-        "salary", "fair_salary", "surplus", "$/WAR", "value_tier",
+        "USG%", "G", "WAR",
+        "salary", "fair_salary", "surplus", "value_tier",
     ]
     display_cols = [c for c in display_cols if c in filt.columns]
 

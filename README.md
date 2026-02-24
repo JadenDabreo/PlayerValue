@@ -1,6 +1,6 @@
 # NBA Player Contract Value Dashboard
 
-A Streamlit web app that calculates NBA player contract surplus value using a composite skill model built from DARKO DPM and EPM (Effective Plus-Minus). The dashboard surfaces trade targets based on team needs and ranks players by how underpaid or overpaid they are relative to their on-court impact.
+A Streamlit web app that calculates NBA player contract surplus value using a composite skill model built from DARKO DPM and EPM (Effective Plus-Minus). The dashboard ranks players by how underpaid or overpaid they are relative to their on-court impact and classifies every player into a playing style archetype.
 
 ---
 
@@ -123,7 +123,9 @@ Open [http://localhost:8501](http://localhost:8501) in your browser.
 | **📊 Charts** | Composite Skill vs Salary scatter, WAR vs Surplus scatter, tier distribution bar chart |
 | **🏟️ Team Summary** | Team-level surplus value and WAR bar charts + summary table |
 | **🔍 Player Detail** | Per-player contract vs fair value chart across all contract years |
-| **🔄 Trade Targets** | Team needs analysis (offense/defense/skill) with ranked attainable trade targets |
+| **⚖️ Compare Players** | Side-by-side stat and value comparison between two players |
+| **🔬 Similar Players** | Finds the most statistically similar players using style and advanced stats |
+| **🎯 Archetypes** | Classifies every player into one or more playing style archetypes (guards/wings/bigs) with distribution charts and peer lookup |
 
 ### Sidebar Filters
 
