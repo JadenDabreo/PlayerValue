@@ -84,12 +84,13 @@ ARCHETYPE_META = {
     "Offensive Engine":          ("guard", "★★★", "Primary ball-handler who creates for himself and others. High usage scorer with playmaking."),
     "Jumbo Playmaker":           ("guard", "★★★", "Wing-sized player who operates like a point guard. Rare size-skill combo."),
     "All-Around Guard":          ("guard", "★★★", "Balanced two-way guard who contributes on both ends. Can shoot, pass, and defend."),
-    "Playmaking Guard":          ("guard", "★★",  "Pass-first guard who facilitates the offense. Moderate scoring, strong decision-making."),
     "3-and-D Guard":             ("guard", "★★★", "Off-ball guard who spaces the floor with shooting and guards at a high level."),
+    "Playmaking Guard":          ("guard", "★★",  "Pass-first guard who facilitates the offense. Moderate scoring, strong decision-making."),
     "Slasher Guard":             ("guard", "★★",  "Gets to the basket and draws fouls. Relies on athleticism and drives over jump-shooting."),
     "Pure Point Guard":          ("guard", "★★",  "Pass-first facilitator. Limited scoring but elite in organizing the offense."),
     "Shooting Specialist Guard": ("guard", "★★",  "Catch-and-shoot specialist who spaces the floor. Limited creation."),
     "Defensive Specialist Guard":("guard", "★★",  "On-ball defender assigned to the opponent's best guard. Minimal offensive role."),
+    "Shot Creator":              ("guard", "★★",  "Self-sufficient scorer who generates their own offense. Not a primary playmaker but can hunt their shot at will."),
     "Combo Guard":               ("guard", "★",   "Balanced but non-elite guard without a single dominant trait."),
     "Microwave Scorer":          ("guard", "★",   "Bench scorer who creates his own shot. Minimal defensive impact."),
     # Wings
@@ -111,6 +112,7 @@ ARCHETYPE_META = {
     "Rim Protector":             ("big",   "★★",  "Deterrent at the rim. Protects the paint with shot-blocking and physical presence."),
     "Stretch Big":               ("big",   "★★",  "Big who can shoot threes and pull the defense away from the basket."),
     "Scoring Big":               ("big",   "★★",  "Offensively-oriented big. Scores efficiently but limited defensive impact."),
+    "Lob/Roll Man":              ("big",   "★★",  "Athletic big who thrives as a pick-and-roll finisher. Catches lobs, screens, and cleans up around the rim. Not a shot blocker or shooter."),
     "Energy/Rebounding Big":     ("big",   "★",   "Hustle player who crashes the boards, sets screens, and finishes lobs. Limited skillset."),
     "Utility Big":               ("big",   "★",   "Big who contributes in situational roles without a single defining trait."),
 }
@@ -196,6 +198,8 @@ def assign_archetypes(row) -> tuple:
             matches.append("Shooting Specialist Guard")
         if ddpm >= 1.5 and pts <= 9:
             matches.append("Defensive Specialist Guard")
+        if pts >= 14 and usg >= 20 and fta >= 2.5 and ddpm >= -0.5:
+            matches.append("Shot Creator")
         if pts >= 14 and ast <= 3 and ddpm < -0.5:
             matches.append("Microwave Scorer")
         if not matches:
@@ -240,6 +244,8 @@ def assign_archetypes(row) -> tuple:
             matches.append("Stretch Big")
         if pts >= 12 and trb >= 5:
             matches.append("Scoring Big")
+        if trb >= 7 and pts >= 8 and tpa <= 1.0 and blk < 1.5 and fta >= 2.0:
+            matches.append("Lob/Roll Man")
         if trb >= 7 and pts <= 10:
             matches.append("Energy/Rebounding Big")
         if not matches:
@@ -592,6 +598,15 @@ c6.metric("Replacement",     int(tc.get("Replacement Level", 0)))
 
 st.markdown("---")
 
+# ── Cross-tab selection state ─────────────────────────────────────────────────
+# _nav_player     : last player set by any table click
+# _last_written_nav: last player WE wrote into detail_player (prevents overwriting user typing)
+# _tbl_key / _arc_key: widget key counters; bumping a key resets that table's selection
+for _k, _v in [("_tbl_key", 0), ("_arc_key", 0),
+               ("_nav_player", ""), ("_last_written_nav", "")]:
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tab_table, tab_charts, tab_team, tab_player, tab_compare, tab_similar, tab_archetypes = st.tabs(
     ["📋 Player Table", "📊 Charts", "🏟️ Team Summary", "🔍 Player Detail",
@@ -643,8 +658,19 @@ with tab_table:
         .applymap(_style_trajectory,  subset=["trajectory"] if "trajectory" in display_cols else [])
     )
 
-    st.dataframe(styled, use_container_width=True, height=500)
-    st.caption(f"Showing **{len(filt)}** of **{len(df)}** players")
+    _table_event = st.dataframe(
+        styled, use_container_width=True, height=500,
+        on_select="rerun", selection_mode="single-row",
+        key=f"player_table_{st.session_state['_tbl_key']}",
+    )
+    st.caption(f"Showing **{len(filt)}** of **{len(df)}** players · Click a row to open in Player Detail")
+
+    if _table_event.selection.rows:
+        _clicked = filt.iloc[_table_event.selection.rows[0]]["Player"]
+        if st.session_state["_nav_player"] != _clicked:
+            st.session_state["_nav_player"] = _clicked
+            st.session_state["_arc_key"] += 1   # deselects the archetypes table
+        st.info(f"**{_clicked}** selected — click the **🔍 Player Detail** tab to view their profile.")
 
     # Future contract years table (only if player has future years)
     if future_cols:
@@ -868,12 +894,27 @@ with tab_team:
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_player:
     all_detail_players = sorted(df["Player"].dropna().unique().tolist())
+    _detail_options = [""] + _player_options(all_detail_players)
+
+    # Apply pending table navigation BEFORE the widget is created.
+    # Only write when _nav_player changed since we last wrote (prevents overwriting user input).
+    _nav = st.session_state["_nav_player"]
+    if _nav and _nav in _detail_options and _nav != st.session_state["_last_written_nav"]:
+        st.session_state["detail_player"] = _nav
+        st.session_state["_last_written_nav"] = _nav
+
     sel_player_raw = st.selectbox(
         "Type a name to search, then click to select",
-        [""] + _player_options(all_detail_players),
+        _detail_options,
         key="detail_player",
     )
     sel_player = _resolve_player(sel_player_raw)
+
+    # Detect manual search (widget value differs from last table nav)
+    if sel_player_raw and sel_player_raw != st.session_state["_nav_player"]:
+        st.session_state["_nav_player"] = sel_player_raw
+        st.session_state["_arc_key"] += 1   # clears arc table (Tab 7 not yet rendered)
+        st.session_state["_tbl_key"] += 1   # clears player table on next natural rerun
 
     if not sel_player:
         st.info("Start typing a player name in the box above.")
@@ -1793,12 +1834,24 @@ with tab_archetypes:
         .applymap(_style_archetype, subset=["Archetype"])
         .applymap(_style_tier,      subset=["value_tier"])
     )
-    st.dataframe(
+    _arc_event = st.dataframe(
         styled_arc,
         use_container_width=True,
         height=min(600, (len(arc_df) + 1) * 38),
         column_config={"Also": st.column_config.TextColumn("Also", width="large")},
+        on_select="rerun", selection_mode="single-row",
+        key=f"arc_table_{st.session_state['_arc_key']}",
     )
+
+    if _arc_event.selection.rows:
+        _arc_clicked = arc_df.iloc[_arc_event.selection.rows[0]]["Player"]
+        # Tab 4's widget is already instantiated so we can't write detail_player directly.
+        # Set _nav_player and rerun — Tab 4 picks it up before its widget is created.
+        if st.session_state["_nav_player"] != _arc_clicked:
+            st.session_state["_nav_player"] = _arc_clicked
+            st.session_state["_tbl_key"] += 1   # deselects the player table
+            st.rerun()
+        st.info(f"**{_arc_clicked}** selected — click the **🔍 Player Detail** tab to view their profile.")
 
     # ── Archetype glossary ────────────────────────────────────────────────────
     st.markdown("---")
