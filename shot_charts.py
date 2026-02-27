@@ -27,6 +27,15 @@ DELAY      = 1.0   # seconds between requests — NBA API rate-limits aggressive
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# PlayerValue name → nba_api name when they differ
+NAME_ALIASES = {
+    "A.J. Green":         "AJ Green",
+    "AJ Lawson":          "A.J. Lawson",
+    "Carlton Carrington": "Bub Carrington",
+    "Alexandre Sarr":     "Alex Sarr",
+    "Nicolas Claxton":    "Nic Claxton",
+}
+
 # Zone labels as returned by the NBA API
 ZONES = [
     ("restricted_area", ["Restricted Area"]),
@@ -134,7 +143,8 @@ if __name__ == "__main__":
     fetched   = 0   # count of newly fetched players this run
 
     for i, name in enumerate(new_players):
-        pid = _get_player_id(name)
+        lookup_name = NAME_ALIASES.get(name, name)  # use alias for API lookup if needed
+        pid = _get_player_id(lookup_name)
         if pid is None:
             print(f"  [{i+1}/{len(new_players)}] {name} — ID not found, skipping")
             continue
