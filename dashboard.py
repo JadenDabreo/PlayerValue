@@ -1920,13 +1920,13 @@ with tab_shots:
             with col_ctrl1:
                 view_mode = st.radio(
                     "View",
-                    ["Scatter", "Density", "Efficiency"],
+                    ["Scatter", "Density", "Efficiency", "Zones"],
                     horizontal=True,
                     key="shot_view_mode",
                 )
             with col_ctrl2:
                 # Made/Missed filter only applies to Scatter and Density
-                if view_mode != "Efficiency":
+                if view_mode in ("Scatter", "Density"):
                     show_made = st.radio(
                         "Shots",
                         ["All", "Made", "Missed"],
@@ -1935,16 +1935,16 @@ with tab_shots:
                     )
                 else:
                     show_made = "All"
-                    st.caption("Efficiency uses all shots to compute FG%")
+                    st.caption("Uses all shots to compute FG%")
 
-            # Apply made/missed filter (not used in Efficiency mode)
-            all_p_shots = p_shots.copy()   # keep unfiltered copy for Efficiency
+            # Apply made/missed filter (not used in Efficiency/Combined modes)
+            all_p_shots = p_shots.copy()   # keep unfiltered copy for FG% modes
             if show_made == "Made":
                 p_shots = p_shots[p_shots["SHOT_MADE_FLAG"] == 1]
             elif show_made == "Missed":
                 p_shots = p_shots[p_shots["SHOT_MADE_FLAG"] == 0]
 
-            total_shown = len(all_p_shots) if view_mode == "Efficiency" else len(p_shots)
+            total_shown = len(all_p_shots) if view_mode in ("Efficiency", "Combined") else len(p_shots)
             made_shown  = int(all_p_shots["SHOT_MADE_FLAG"].sum())
             st.markdown(
                 f"**{shot_player}** — {total_shown:,} shots · "
@@ -1955,6 +1955,16 @@ with tab_shots:
             # ── Court figure ──────────────────────────────────────────────────
             COURT_BG    = "#1a1a2e"   # dark navy — easy on the eyes
             COURT_LINES = "#c8c8c8"   # light grey lines pop on dark bg
+
+            # Shared diverging colorscale: red (cold) → neutral (~47% league avg) → green (hot)
+            # zmin=0.20, zmax=0.80 → league avg 0.47 sits at position ≈ 0.45
+            _eff_colorscale = [
+                [0.00, "#cc1100"],
+                [0.27, "#ee7700"],
+                [0.45, "#555566"],
+                [0.62, "#33aa55"],
+                [1.00, "#00dd44"],
+            ]
 
             fig_court = go.Figure()
 
@@ -2026,7 +2036,7 @@ with tab_shots:
                     xanchor="center",
                 )
 
-            else:  # Efficiency — FG% heatmap, cells with < MIN_FGA hidden
+            elif view_mode == "Efficiency":  # FG% heatmap, cells with < MIN_FGA hidden
                 import numpy as np
                 MIN_FGA = 2   # minimum attempts before a cell is shown
 
@@ -2064,16 +2074,6 @@ with tab_shots:
                 x_centers = (x_bins[:-1] + x_bins[1:]) / 2
                 y_centers = (y_bins[:-1] + y_bins[1:]) / 2
 
-                # Diverging colorscale: red (cold) → neutral (≈ league avg ~47%) → green (hot)
-                # zmin/zmax: 0.20–0.80; league avg 0.47 sits at position (0.47-0.20)/(0.80-0.20) ≈ 0.45
-                _eff_colorscale = [
-                    [0.00, "#cc1100"],   # 20% FG — well below avg
-                    [0.27, "#ee7700"],   # ~36% FG
-                    [0.45, "#555566"],   # ~47% FG ≈ league average (neutral)
-                    [0.62, "#33aa55"],   # ~57% FG
-                    [1.00, "#00dd44"],   # 80%+ FG — elite zone
-                ]
-
                 fig_court.add_trace(go.Heatmap(
                     x=x_centers,
                     y=y_centers,
@@ -2095,6 +2095,85 @@ with tab_shots:
                 fig_court.add_annotation(
                     text=f"Red = below avg · Grey ≈ league avg (~47%) · Green = above avg · "
                          f"min {MIN_FGA} attempts per cell shown",
+                    xref="paper", yref="paper",
+                    x=0.5, y=-0.04, showarrow=False,
+                    font=dict(size=11, color="#aaaaaa"),
+                    xanchor="center",
+                )
+
+            else:  # Zones — NBA-style zone cards: FG% vs league avg per zone
+                # League average FG% by zone (2025-26 season approximation)
+                # Mid-range is split L/C/R using SHOT_ZONE_AREA for asymmetric display
+                ZONE_LG_AVG = {
+                    "restricted_area": 0.63,
+                    "paint_nonra":     0.40,
+                    "midrange_left":   0.40,
+                    "midrange_center": 0.40,
+                    "midrange_right":  0.40,
+                    "corner3_left":    0.38,
+                    "corner3_right":   0.38,
+                    "above_break3":    0.36,
+                }
+                # Each entry: (basic_labels, area_labels_or_None, card_position)
+                # area_labels=None means don't filter by area
+                ZONE_DEFS = [
+                    ("restricted_area", ["Restricted Area"],           None,                              (0,   15)),
+                    ("paint_nonra",     ["In The Paint (Non-RA)"],     None,                              (0,   88)),
+                    ("midrange_left",   ["Mid-Range"],                 ["Left Side(L)", "Left Side Center(LC)"],   (-165, 140)),
+                    ("midrange_center", ["Mid-Range"],                 ["Center(C)"],                     (0,  215)),
+                    ("midrange_right",  ["Mid-Range"],                 ["Right Side(R)", "Right Side Center(RC)"], (165, 140)),
+                    ("corner3_left",    ["Left Corner 3"],             None,                              (-220, 20)),
+                    ("corner3_right",   ["Right Corner 3"],            None,                              (220,  20)),
+                    ("above_break3",    ["Above the Break 3"],         None,                              (0,  275)),
+                ]
+
+                valid_z = all_p_shots.dropna(
+                    subset=["SHOT_ZONE_BASIC", "SHOT_MADE_FLAG"]).copy()
+                total_z = len(valid_z)
+
+                for zkey, basic_labels, area_labels, (cx, cy) in ZONE_DEFS:
+                    mask = valid_z["SHOT_ZONE_BASIC"].isin(basic_labels)
+                    if area_labels and "SHOT_ZONE_AREA" in valid_z.columns:
+                        mask &= valid_z["SHOT_ZONE_AREA"].isin(area_labels)
+                    zdf  = valid_z[mask]
+                    n    = len(zdf)
+                    made = int(zdf["SHOT_MADE_FLAG"].sum()) if n else 0
+                    fg   = made / n if n else None
+                    pct  = n / total_z if total_z else 0
+                    lg   = ZONE_LG_AVG[zkey]
+
+                    if fg is None:
+                        bg_color = "#444455"
+                        label    = "No data"
+                    else:
+                        diff = fg - lg
+                        if   diff >=  0.12: bg_color = "#007722"
+                        elif diff >=  0.05: bg_color = "#2a9a44"
+                        elif diff >=  0.00: bg_color = "#4aaa66"
+                        elif diff >= -0.05: bg_color = "#aa4433"
+                        elif diff >= -0.12: bg_color = "#cc2200"
+                        else:               bg_color = "#ff0000"
+                        sign  = "+" if diff >= 0 else ""
+                        label = (f"<b>{fg:.0%}</b><br>"
+                                 f"<span style='font-size:10px'>"
+                                 f"Lg: {lg:.0%} ({sign}{diff:+.0%})<br>"
+                                 f"{n} att ({pct:.0%})</span>")
+
+                    fig_court.add_annotation(
+                        x=cx, y=cy, xref="x", yref="y",
+                        text=label,
+                        showarrow=False,
+                        bgcolor=bg_color,
+                        bordercolor="rgba(255,255,255,0.3)",
+                        borderwidth=1,
+                        borderpad=6,
+                        font=dict(color="white", size=12),
+                        opacity=0.92,
+                        align="center",
+                    )
+
+                fig_court.add_annotation(
+                    text="Green = above league avg  ·  Red = below league avg  ·  Lg = league avg FG%",
                     xref="paper", yref="paper",
                     x=0.5, y=-0.04, showarrow=False,
                     font=dict(size=11, color="#aaaaaa"),
