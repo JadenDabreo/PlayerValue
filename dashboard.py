@@ -288,7 +288,7 @@ st.set_page_config(
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def parse_money(s) -> float:
-    if pd.isna(s) or str(s).strip() in ("", "nan"):
+    if pd.isna(s) or str(s).strip() in ("", "nan", "—"):
         return float("nan")
     return float(str(s).replace("$", "").replace(",", "").replace("-", "-").strip())
 
@@ -528,6 +528,17 @@ with st.sidebar:
     st.markdown("## 🏀 NBA Contract Value")
     st.markdown("---")
 
+    use_projected_min = st.toggle(
+        "Role-based minutes",
+        value=True,
+        help=(
+            "ON  → Fair contract uses each player's own minutes per game × 72 games "
+            "(starters valued higher than bench players by volume).  \n"
+            "OFF → Every player gets a flat 72 × 30 min assumption — injured or "
+            "low-usage players are valued on skill alone, not penalized for missed minutes."
+        ),
+    )
+
     teams = ["All Teams"] + sorted(df["Team"].dropna().unique().tolist())
     sel_team = st.selectbox("Team", teams)
 
@@ -566,6 +577,44 @@ with st.sidebar:
         "and the NBA aging curve thereafter."
     )
 
+
+# ── Recalculate fair contract using actual minutes if toggled ─────────────────
+if not use_projected_min:
+    _REPLACEMENT_DPM     = -2.0
+    _MARKET_RATE_PER_WIN = 6_000_000
+    _LEAGUE_MINIMUM      = 1_119_563
+    _POINTS_PER_WIN      = 33.5
+    _EXPECTED_GAMES      = 72
+
+    # Flat 72 × 30 min for every player — injured players are valued on skill
+    # alone at equal volume, not penalized for missed games
+    _actual_MP = _EXPECTED_GAMES * 30
+
+    _war_actual  = (df["composite_skill"] - _REPLACEMENT_DPM) * _actual_MP / (48 * _POINTS_PER_WIN)
+    _fair_actual = _war_actual.clip(lower=0) * _MARKET_RATE_PER_WIN * df["usage_scalar"] + _LEAGUE_MINIMUM
+    _surplus_actual = _fair_actual - df["salary__n"]
+
+    df = df.copy()
+    _dw_actual = (df["salary__n"] / _war_actual.clip(lower=0.01)).round(0)
+    df["WAR"]            = _war_actual.round(2)
+    df["fair_salary__n"] = _fair_actual.round(0)
+    df["surplus__n"]     = _surplus_actual.round(0)
+    df["$/WAR__n"]       = _dw_actual
+    df["fair_salary"]    = df["fair_salary__n"].apply(money_str)
+    df["surplus"]        = df["surplus__n"].apply(money_str)
+    df["$/WAR"]          = _dw_actual.apply(money_str)
+    df["value_tier"]     = df.apply(
+        lambda r: (
+            "Replacement Level"  if pd.isna(r["WAR"]) or r["WAR"] < 0
+            else "No Contract Data" if pd.isna(r["surplus__n"])
+            else "Elite Bargain"    if r["surplus__n"] > 20_000_000
+            else "Great Value"      if r["surplus__n"] > 10_000_000
+            else "Good Value"       if r["surplus__n"] > 0
+            else "Fair Value"       if r["surplus__n"] > -8_000_000
+            else "Overpaid"         if r["surplus__n"] > -20_000_000
+            else "Significantly Overpaid"
+        ), axis=1
+    )
 
 # ── Filter ────────────────────────────────────────────────────────────────────
 filt = df.copy()
@@ -964,11 +1013,43 @@ with tab_player:
             outlooks.append(tier)
 
         # Future seasons
-        for yr_col in future_cols:
+        _proj_mp   = row.get("projected_MP", 0) or 0
+        _comp      = row.get("composite_skill")
+        _usage     = row.get("usage_scalar", 1.0) or 1.0
+        _dpm_imp   = row.get("DPM Improvement") or 0
+        _age_base  = row.get("Age")
+
+        for yr_i, yr_col in enumerate(future_cols, start=1):
             actual = parse_money(row.get(yr_col))
             surplus_n = parse_money(row.get(f"surplus_{yr_col}"))
             if pd.notna(actual):
                 fair_yr = actual + surplus_n if pd.notna(surplus_n) else float("nan")
+
+                # If projected_MP was 0 (injured player), pre-computed surplus collapsed
+                # to league minimum — recompute using 30 MPG fallback (matches toggle)
+                _LEAGUE_MIN = 1_119_563
+                if _proj_mp == 0 and pd.notna(_comp) and (pd.isna(fair_yr) or fair_yr <= _LEAGUE_MIN + 1000):
+                    _mp_fallback = 30 * 72
+                    # Apply same aging/improvement curve as PlayerValue.py
+                    _dpm_proj = _comp
+                    for step in range(1, yr_i + 1):
+                        if step == 1:
+                            _delta = max(-1.5, min(1.5, _dpm_imp))
+                        else:
+                            _a = (_age_base + step - 1) if pd.notna(_age_base) else None
+                            if _a is None: _delta = -0.10
+                            elif _a < 22:  _delta =  0.30
+                            elif _a < 24:  _delta =  0.15
+                            elif _a < 26:  _delta =  0.05
+                            elif _a < 28:  _delta = -0.05
+                            elif _a < 30:  _delta = -0.15
+                            elif _a < 32:  _delta = -0.25
+                            elif _a < 34:  _delta = -0.35
+                            else:          _delta = -0.50
+                        _dpm_proj = max(-6, min(10, _dpm_proj + _delta))
+                    _war_proj = max((_dpm_proj - (-2.0)) * _mp_fallback / (48 * 33.5), 0)
+                    fair_yr = _war_proj * 6_000_000 * _usage + _LEAGUE_MIN
+
                 seasons.append(yr_col)
                 actual_vals.append(actual)
                 fair_vals.append(fair_yr if pd.notna(fair_yr) else 0)

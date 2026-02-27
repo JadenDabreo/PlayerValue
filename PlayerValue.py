@@ -284,6 +284,16 @@ merged["Age"] = pd.to_numeric(merged["Age"], errors="coerce")
 merged["actual_MP"]    = (merged["G"] * merged["MP"]).round(0)
 merged["projected_MP"] = (merged["MP"] * EXPECTED_GAMES).round(0)
 
+# Players with 0 games this season (injured / not yet appeared) have projected_MP=0,
+# which collapses current WAR and all multi-year outlooks to league minimum.
+# Use a 30 MPG fallback (matches the dashboard's flat-minutes toggle) so their
+# contract outlook reflects skill, not injury status.
+# projected_MP (= role-based volume) stays 0 for current WAR.
+_FALLBACK_MPG        = 30
+merged["_outlook_MP"] = merged["projected_MP"].where(
+    merged["projected_MP"] > 0, _FALLBACK_MPG * EXPECTED_GAMES
+)
+
 # Trajectory label from DARKO's own improvement signal
 merged["trajectory"] = merged["DPM Improvement"].apply(
     lambda x: "Trending Up" if pd.notna(x) and x > 0.3
@@ -367,7 +377,7 @@ for i, yr_col in enumerate(future_season_cols, start=1):
     projected_dpm = (projected_dpm + annual_delta).clip(lower=-6, upper=10)
 
     projected_war = (
-        (projected_dpm - REPLACEMENT_DPM) * merged["projected_MP"] / (48 * POINTS_PER_WIN)
+        (projected_dpm - REPLACEMENT_DPM) * merged["_outlook_MP"] / (48 * POINTS_PER_WIN)
     ).clip(lower=0)
     projected_fair = (
         projected_war * MARKET_RATE_PER_WIN * merged["usage_scalar"] + LEAGUE_MINIMUM
