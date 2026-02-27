@@ -408,6 +408,34 @@ for col in money_cols:
     if col in merged.columns:
         merged[col] = merged[col].apply(fmt_money)
 
+# ── Merge shot-zone data (optional — produced by shot_charts.py) ──────────────
+ZONE_COLS = [
+    "pct_restricted_area", "pct_paint_nonra", "pct_midrange",
+    "pct_corner3", "pct_above_break3",
+    "fg_pct_restricted_area", "fg_pct_paint_nonra", "fg_pct_midrange",
+    "fg_pct_corner3", "fg_pct_above_break3",
+    "total_fga",
+]
+
+zone_files = sorted(
+    glob.glob(os.path.join("ShotCharts", "shot_zones_*.xlsx")), reverse=True
+)
+if zone_files:
+    print(f"\n  Zones  ← {zone_files[0]}")
+    zone_df = pd.read_excel(zone_files[0])
+    zone_df["Player"] = zone_df["Player"].map(canonical_name)
+    zone_df["_key"]   = zone_df["Player"].map(normalize_name)
+    zone_df = zone_df.drop_duplicates(subset="_key", keep="first")
+    merged["_key"] = merged["Player"].map(normalize_name)
+    zone_keep = ["_key"] + [c for c in ZONE_COLS if c in zone_df.columns]
+    merged = merged.merge(zone_df[zone_keep], on="_key", how="left")
+    merged.drop(columns=["_key"], inplace=True)
+    matched = merged["pct_restricted_area"].notna().sum()
+    print(f"  Shot zones matched to {matched} / {len(merged)} players")
+else:
+    print("\n  Shot zones: not found — run shot_charts.py to enable. Skipping.")
+    ZONE_COLS = []
+
 # ── Write Excel ───────────────────────────────────────────────────────────────
 year = datetime.now().year
 output_file = os.path.join(output_folder, f"player_value_{year}.xlsx")
@@ -421,6 +449,11 @@ value_cols = [
     "USG%", "usage_scalar", "G", "projected_MP", "WAR",
     # Per-game style stats from Basketball-Reference
     "PTS", "TRB", "AST", "STL", "BLK", "TOV", "3PA", "3P%", "FTA", "FT%",
+    # Shot zone breakdown (produced by shot_charts.py)
+    "pct_restricted_area", "pct_paint_nonra", "pct_midrange",
+    "pct_corner3", "pct_above_break3",
+    "fg_pct_restricted_area", "fg_pct_paint_nonra", "fg_pct_midrange",
+    "fg_pct_corner3", "fg_pct_above_break3", "total_fga",
     "salary", "fair_salary", "surplus", "$/WAR", "value_tier",
 ]
 value_cols = [c for c in value_cols if c in merged.columns]

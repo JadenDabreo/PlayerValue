@@ -373,6 +373,65 @@ def load_data():
 
 
 @st.cache_data
+def load_shot_data():
+    """Load raw per-shot data produced by shot_charts.py. Returns None if not yet available."""
+    files = sorted(glob.glob(os.path.join("ShotCharts", "shots_raw_*.xlsx")), reverse=True)
+    if not files:
+        return None
+    df = pd.read_excel(files[0])
+    for col in ("LOC_X", "LOC_Y", "SHOT_MADE_FLAG", "SHOT_DISTANCE"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def _draw_half_court(fig, line_color="#555555", lw=1.5):
+    """Overlay NBA half-court markings onto a Plotly figure.
+    Basket at (0,0); baseline at y ≈ -52.5; y increases away from the basket."""
+    import numpy as np
+
+    def _arc(cx, cy, r, t0_deg, t1_deg, n=120):
+        t = np.linspace(np.radians(t0_deg), np.radians(t1_deg), n)
+        return list(cx + r * np.cos(t)), list(cy + r * np.sin(t))
+
+    kw = dict(mode="lines", line=dict(color=line_color, width=lw),
+              showlegend=False, hoverinfo="skip")
+
+    # Outer half-court boundary
+    fig.add_trace(go.Scatter(
+        x=[-250, 250, 250, -250, -250], y=[-52.5, -52.5, 417.5, 417.5, -52.5], **kw))
+
+    # Paint rectangle
+    fig.add_shape(type="rect", x0=-80, y0=-52.5, x1=80, y1=137.5,
+                  line=dict(color=line_color, width=lw), fillcolor="rgba(0,0,0,0)")
+
+    # Free throw line
+    fig.add_trace(go.Scatter(x=[-80, 80], y=[137.5, 137.5], **kw))
+
+    # Free throw circle upper solid half, lower dashed
+    xs, ys = _arc(0, 137.5, 60, 0, 180)
+    fig.add_trace(go.Scatter(x=xs, y=ys, **kw))
+    xs, ys = _arc(0, 137.5, 60, 180, 360)
+    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines",
+                             line=dict(color=line_color, width=lw, dash="dot"),
+                             showlegend=False, hoverinfo="skip"))
+
+    # Restricted area arc (4 ft = 40 units), basket circle, backboard
+    xs, ys = _arc(0, 0, 40, 0, 180)
+    fig.add_trace(go.Scatter(x=xs, y=ys, **kw))
+    xs, ys = _arc(0, 0, 7.5, 0, 360)
+    fig.add_trace(go.Scatter(x=xs, y=ys, **kw))
+    fig.add_trace(go.Scatter(x=[-30, 30], y=[-7.5, -7.5], **kw))
+
+    # Three-point line: corner straight portions + arc
+    for side in (-1, 1):
+        fig.add_trace(go.Scatter(x=[side * 220, side * 220], y=[-52.5, 89.5], **kw))
+    t_corner = float(np.degrees(np.arcsin(220 / 237.5)))
+    xs, ys = _arc(0, 0, 237.5, t_corner, 180 - t_corner)
+    fig.add_trace(go.Scatter(x=xs, y=ys, **kw))
+
+
+@st.cache_data
 def load_team_stats():
     path = os.path.join("Team_stats", "nba_2025_2026_team_stats_sorted_with_rank_filled.xlsx")
     if not os.path.exists(path):
@@ -608,9 +667,9 @@ for _k, _v in [("_tbl_key", 0), ("_arc_key", 0),
         st.session_state[_k] = _v
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_table, tab_charts, tab_team, tab_player, tab_compare, tab_similar, tab_archetypes = st.tabs(
+tab_table, tab_charts, tab_team, tab_player, tab_compare, tab_similar, tab_archetypes, tab_shots = st.tabs(
     ["📋 Player Table", "📊 Charts", "🏟️ Team Summary", "🔍 Player Detail",
-     "⚖️ Compare Players", "🔬 Similar Players", "🎯 Archetypes"]
+     "⚖️ Compare Players", "🔬 Similar Players", "🎯 Archetypes", "🗺️ Shot Chart"]
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1322,6 +1381,12 @@ _SIM_FEATURES = [
     ("composite_skill","Composite",    1.0),
     ("WAR",            "WAR",          0.6),
     ("Age",            "Age",          0.3),
+    # Shot zone distribution — where the player shoots from
+    ("pct_restricted_area", "RA %",      2.0),
+    ("pct_paint_nonra",     "Paint %",   1.5),
+    ("pct_midrange",        "Midrange %",1.5),
+    ("pct_corner3",         "Corner 3 %",1.5),
+    ("pct_above_break3",    "AB3 %",     1.5),
 ]
 
 
@@ -1461,6 +1526,7 @@ with tab_similar:
                     unsafe_allow_html=True,
                 )
 
+# ═══════════════════════════════════════════════════════════════════════════════
                 # ── Similarity results table ──────────────────────────────────
                 st.markdown("##### Most Similar Players")
                 sim_display_cols = [
@@ -1880,3 +1946,239 @@ with tab_archetypes:
                     f"</div>",
                     unsafe_allow_html=True,
                 )
+
+# TAB 8 — Shot Chart
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_shots:
+    shot_df = load_shot_data()
+
+    if shot_df is None or shot_df.empty:
+        st.info(
+            "No shot chart data found.  \n"
+            "Run **`shot_charts.py`** first to fetch NBA shot data, then restart the dashboard."
+        )
+    else:
+        # ── Player selector ───────────────────────────────────────────────────
+        shot_players = sorted(shot_df["Player"].dropna().unique().tolist())
+
+        # Pre-populate from cross-tab navigation
+        _shot_default = ""
+        _nav_sc = st.session_state.get("_nav_player", "")
+        if _nav_sc in shot_players:
+            _shot_default = _nav_sc
+
+        shot_player = st.selectbox(
+            "Select player",
+            options=[""] + shot_players,
+            index=(shot_players.index(_shot_default) + 1) if _shot_default else 0,
+            key="shot_chart_player",
+        )
+
+        if not shot_player:
+            st.info("Select a player above to view their shot chart.")
+        else:
+            p_shots = shot_df[shot_df["Player"] == shot_player].copy()
+
+            # ── View controls ─────────────────────────────────────────────────
+            col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([2, 2, 3])
+            with col_ctrl1:
+                view_mode = st.radio(
+                    "View",
+                    ["Scatter", "Density"],
+                    horizontal=True,
+                    key="shot_view_mode",
+                )
+            with col_ctrl2:
+                show_made = st.radio(
+                    "Shots",
+                    ["All", "Made", "Missed"],
+                    horizontal=True,
+                    key="shot_filter_made",
+                )
+
+            # Apply made/missed filter
+            if show_made == "Made":
+                p_shots = p_shots[p_shots["SHOT_MADE_FLAG"] == 1]
+            elif show_made == "Missed":
+                p_shots = p_shots[p_shots["SHOT_MADE_FLAG"] == 0]
+
+            st.markdown(f"**{shot_player}** — {len(p_shots):,} shots shown  "
+                        f"({int(p_shots['SHOT_MADE_FLAG'].sum())} made / "
+                        f"{len(p_shots) - int(p_shots['SHOT_MADE_FLAG'].sum())} missed)")
+
+            # ── Court figure ──────────────────────────────────────────────────
+            fig_court = go.Figure()
+
+            if view_mode == "Scatter":
+                colors = p_shots["SHOT_MADE_FLAG"].map({1: "#2ea44f", 0: "#d73a49"})
+                labels = p_shots["SHOT_MADE_FLAG"].map({1: "Made", 0: "Missed"})
+                hover_text = (
+                    labels + "<br>"
+                    + p_shots.get("ACTION_TYPE", pd.Series([""] * len(p_shots),
+                                                            index=p_shots.index)).fillna("").astype(str)
+                )
+                fig_court.add_trace(go.Scatter(
+                    x=p_shots["LOC_X"],
+                    y=p_shots["LOC_Y"],
+                    mode="markers",
+                    marker=dict(
+                        color=colors,
+                        size=5,
+                        opacity=0.65,
+                        line=dict(width=0.4, color="rgba(0,0,0,0.2)"),
+                    ),
+                    text=hover_text,
+                    hovertemplate="%{text}<extra></extra>",
+                    showlegend=False,
+                ))
+                # Legend proxy traces
+                for label, color in [("Made", "#2ea44f"), ("Missed", "#d73a49")]:
+                    fig_court.add_trace(go.Scatter(
+                        x=[None], y=[None], mode="markers",
+                        marker=dict(color=color, size=8),
+                        name=label, showlegend=True,
+                    ))
+
+            else:  # Density
+                fig_court.add_trace(go.Histogram2dContour(
+                    x=p_shots["LOC_X"],
+                    y=p_shots["LOC_Y"],
+                    colorscale="Hot",
+                    reversescale=True,
+                    showscale=True,
+                    contours=dict(showlabels=False),
+                    line=dict(width=0),
+                    hoverinfo="skip",
+                    name="Density",
+                ))
+
+            _draw_half_court(fig_court, line_color="#888888", lw=1.5)
+
+            fig_court.update_layout(
+                height=550,
+                margin=dict(l=10, r=10, t=30, b=10),
+                paper_bgcolor="#fafafa",
+                plot_bgcolor="#fafafa",
+                xaxis=dict(range=[-260, 260], showgrid=False, zeroline=False,
+                           showticklabels=False, scaleanchor="y", scaleratio=1),
+                yaxis=dict(range=[-60, 430], showgrid=False, zeroline=False,
+                           showticklabels=False),
+                legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.02),
+            )
+            st.plotly_chart(fig_court, use_container_width=True)
+
+            # ── Zone breakdown ────────────────────────────────────────────────
+            ZONE_DISPLAY = {
+                "restricted_area": "Restricted Area",
+                "paint_nonra":      "Paint (non-RA)",
+                "midrange":         "Mid-Range",
+                "corner3":          "Corner 3",
+                "above_break3":     "Above Break 3",
+            }
+
+            st.markdown("#### Shot Zone Breakdown")
+            total_fga = len(shot_df[shot_df["Player"] == shot_player])
+
+            # Compute player zone stats
+            zone_rows_chart = []
+            league_pct_cache = {}
+            for zkey, zlabel in ZONE_DISPLAY.items():
+                zone_labels_map = {
+                    "restricted_area": ["Restricted Area"],
+                    "paint_nonra":      ["In The Paint (Non-RA)"],
+                    "midrange":         ["Mid-Range"],
+                    "corner3":          ["Left Corner 3", "Right Corner 3"],
+                    "above_break3":     ["Above the Break 3"],
+                }
+                player_zone = p_shots[p_shots["SHOT_ZONE_BASIC"].isin(
+                    zone_labels_map[zkey])] if "SHOT_ZONE_BASIC" in p_shots.columns else pd.DataFrame()
+                n_zone    = len(player_zone)
+                made_zone = int(player_zone["SHOT_MADE_FLAG"].sum()) if not player_zone.empty else 0
+                pct_shots = n_zone / total_fga if total_fga else 0
+                fg_pct    = made_zone / n_zone if n_zone else 0
+
+                # League average
+                if zkey not in league_pct_cache:
+                    lg_zone = shot_df[shot_df["SHOT_ZONE_BASIC"].isin(
+                        zone_labels_map[zkey])] if "SHOT_ZONE_BASIC" in shot_df.columns else pd.DataFrame()
+                    lg_n  = len(lg_zone)
+                    lg_m  = int(lg_zone["SHOT_MADE_FLAG"].sum()) if not lg_zone.empty else 0
+                    league_pct_cache[zkey] = {
+                        "pct": lg_n / len(shot_df) if len(shot_df) else 0,
+                        "fg":  lg_m / lg_n if lg_n else 0,
+                    }
+                lg = league_pct_cache[zkey]
+
+                zone_rows_chart.append({
+                    "Zone":          zlabel,
+                    "Player %":      round(pct_shots * 100, 1),
+                    "Lg Avg %":      round(lg["pct"] * 100, 1),
+                    "Player FG%":    round(fg_pct * 100, 1),
+                    "Lg Avg FG%":    round(lg["fg"] * 100, 1),
+                    "FGA":           n_zone,
+                })
+
+            zone_chart_df = pd.DataFrame(zone_rows_chart)
+
+            col_z1, col_z2 = st.columns(2)
+
+            with col_z1:
+                st.markdown("**Shot distribution (% of FGA)**")
+                fig_dist = go.Figure()
+                fig_dist.add_trace(go.Bar(
+                    x=zone_chart_df["Zone"],
+                    y=zone_chart_df["Player %"],
+                    name=shot_player,
+                    marker_color="#1976d2",
+                ))
+                fig_dist.add_trace(go.Bar(
+                    x=zone_chart_df["Zone"],
+                    y=zone_chart_df["Lg Avg %"],
+                    name="League Avg",
+                    marker_color="#aaaaaa",
+                ))
+                fig_dist.update_layout(
+                    barmode="group", height=320,
+                    margin=dict(l=10, r=10, t=20, b=80),
+                    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.35),
+                    yaxis_title="% of FGA",
+                    xaxis_tickangle=-30,
+                )
+                st.plotly_chart(fig_dist, use_container_width=True)
+
+            with col_z2:
+                st.markdown("**FG% by zone**")
+                fig_fg = go.Figure()
+                fig_fg.add_trace(go.Bar(
+                    x=zone_chart_df["Zone"],
+                    y=zone_chart_df["Player FG%"],
+                    name=shot_player,
+                    marker_color="#2ea44f",
+                ))
+                fig_fg.add_trace(go.Bar(
+                    x=zone_chart_df["Zone"],
+                    y=zone_chart_df["Lg Avg FG%"],
+                    name="League Avg",
+                    marker_color="#aaaaaa",
+                ))
+                fig_fg.update_layout(
+                    barmode="group", height=320,
+                    margin=dict(l=10, r=10, t=20, b=80),
+                    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.35),
+                    yaxis_title="FG%",
+                    xaxis_tickangle=-30,
+                )
+                st.plotly_chart(fig_fg, use_container_width=True)
+
+            # ── Zone summary table ─────────────────────────────────────────────
+            st.dataframe(
+                zone_chart_df.style.format({
+                    "Player %":   "{:.1f}%",
+                    "Lg Avg %":   "{:.1f}%",
+                    "Player FG%": "{:.1f}%",
+                    "Lg Avg FG%": "{:.1f}%",
+                    "FGA":        "{:,}",
+                }),
+                hide_index=True,
+                use_container_width=True,
+            )
