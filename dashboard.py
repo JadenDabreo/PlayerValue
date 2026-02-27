@@ -2028,13 +2028,15 @@ with tab_shots:
 
             else:  # Efficiency — FG% heatmap, cells with < MIN_FGA hidden
                 import numpy as np
-                MIN_FGA = 3   # hide cells with too few attempts to be meaningful
+                MIN_FGA = 2   # minimum attempts before a cell is shown
 
                 valid_eff = all_p_shots.dropna(subset=["LOC_X", "LOC_Y", "SHOT_MADE_FLAG"]).copy()
                 valid_eff["SHOT_MADE_FLAG"] = valid_eff["SHOT_MADE_FLAG"].astype(float)
 
-                x_bins = np.linspace(-250, 250, 26)    # 25 cols (~20 units each ≈ 2 ft)
-                y_bins = np.linspace(-52.5, 417.5, 25) # 24 rows
+                # Coarser bins (~4 ft each) so each cell captures enough shots.
+                # Y capped at 300 — virtually no shots occur beyond that point.
+                x_bins = np.linspace(-250, 250, 14)   # 13 cols ≈ 38 units each
+                y_bins = np.linspace(-52.5, 300, 11)  # 10 rows ≈ 35 units each
 
                 fga_grid, _, _ = np.histogram2d(
                     valid_eff["LOC_X"], valid_eff["LOC_Y"], bins=[x_bins, y_bins])
@@ -2091,8 +2093,8 @@ with tab_shots:
                     name="Efficiency",
                 ))
                 fig_court.add_annotation(
-                    text=f"Red = below avg · Grey ≈ league avg (~47%) · Green = above avg  "
-                         f"(min {MIN_FGA} attempts per cell)",
+                    text=f"Red = below avg · Grey ≈ league avg (~47%) · Green = above avg · "
+                         f"min {MIN_FGA} attempts per cell shown",
                     xref="paper", yref="paper",
                     x=0.5, y=-0.04, showarrow=False,
                     font=dict(size=11, color="#aaaaaa"),
