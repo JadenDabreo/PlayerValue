@@ -101,43 +101,49 @@ if __name__ == "__main__":
 
     player_df = pd.read_excel(pv_files[0], sheet_name="Value Summary")
     players   = player_df["Player"].dropna().unique().tolist()
-    print(f"Fetching shot charts for {len(players)} players  (season: {SEASON})")
-    print(f"Estimated time: ~{len(players) * DELAY / 60:.0f} minutes\n")
 
-    # Resume support — skip players already saved from a previous interrupted run
     raw_path  = os.path.join(OUTPUT_DIR, f"shots_raw_{SEASON.replace('-','_')}.xlsx")
     zone_path = os.path.join(OUTPUT_DIR, f"shot_zones_{SEASON.replace('-','_')}.xlsx")
 
-    done_players = set()
+    # Load already-fetched players so we only hit the API for new ones
+    done_players  = set()
     existing_raw  = []
     existing_zones = []
     if os.path.exists(raw_path):
-        prev_raw   = pd.read_excel(raw_path)
+        prev_raw     = pd.read_excel(raw_path)
         existing_raw.append(prev_raw)
         done_players |= set(prev_raw["Player"].unique())
-        print(f"  Resuming — {len(done_players)} players already fetched")
     if os.path.exists(zone_path):
         existing_zones.append(pd.read_excel(zone_path))
 
-    all_shots  = existing_raw.copy()
-    zone_rows  = (
-        existing_zones[0].to_dict("records") if existing_zones else []
-    )
+    new_players = [p for p in players if p not in done_players]
 
-    for i, name in enumerate(players):
-        if name in done_players:
-            continue
+    print(f"Total players in model : {len(players)}")
+    print(f"Already have shot data : {len(done_players)}")
+    print(f"Need to fetch          : {len(new_players)}")
 
+    if not new_players:
+        print("\nAll players already have shot data — nothing to do.")
+        print("Done.")
+        exit(0)
+
+    print(f"Estimated time: ~{len(new_players) * DELAY / 60:.0f} minutes\n")
+
+    all_shots = existing_raw.copy()
+    zone_rows = existing_zones[0].to_dict("records") if existing_zones else []
+    fetched   = 0   # count of newly fetched players this run
+
+    for i, name in enumerate(new_players):
         pid = _get_player_id(name)
         if pid is None:
-            print(f"  [{i+1}/{len(players)}] {name} — ID not found, skipping")
+            print(f"  [{i+1}/{len(new_players)}] {name} — ID not found, skipping")
             continue
 
         shots = _fetch_shots(pid)
         time.sleep(DELAY)
 
         if shots.empty:
-            print(f"  [{i+1}/{len(players)}] {name} — no shots returned")
+            print(f"  [{i+1}/{len(new_players)}] {name} — no shots returned")
             continue
 
         shots["Player"] = name
@@ -148,26 +154,28 @@ if __name__ == "__main__":
                      if c in shots.columns]
         all_shots.append(shots[keep_cols])
         zone_rows.append(_zone_summary(name, shots))
+        fetched += 1
 
-        print(f"  [{i+1}/{len(players)}] {name} — {len(shots)} shots")
+        print(f"  [{i+1}/{len(new_players)}] {name} — {len(shots)} shots")
 
-        # Checkpoint every 50 players so a crash doesn't lose everything
-        if (i + 1) % 50 == 0:
+        # Checkpoint every 50 new players so a crash doesn't lose everything
+        if fetched % 50 == 0:
             _raw_save  = pd.concat(all_shots,  ignore_index=True)
             _zone_save = pd.DataFrame(zone_rows)
             _raw_save.to_excel(raw_path,  index=False)
             _zone_save.to_excel(zone_path, index=False)
-            print(f"  ── checkpoint saved ({i+1} players) ──")
+            print(f"  ── checkpoint saved ({fetched} new players) ──")
 
-    # Final save
-    if all_shots:
+    # Only write files if something new was actually added
+    if fetched == 0:
+        print("\nNo new shot data fetched — files unchanged.")
+    else:
         raw_df = pd.concat(all_shots, ignore_index=True)
         raw_df.to_excel(raw_path, index=False)
-        print(f"\nRaw shots → {raw_path}  ({len(raw_df):,} rows)")
+        print(f"\nRaw shots → {raw_path}  ({len(raw_df):,} rows, {fetched} new players added)")
 
-    if zone_rows:
         zone_df = pd.DataFrame(zone_rows)
         zone_df.to_excel(zone_path, index=False)
-        print(f"Zone summary → {zone_path}  ({len(zone_df)} players)")
+        print(f"Zone summary → {zone_path}  ({len(zone_df)} players total)")
 
     print("\nDone. Re-run PlayerValue.py to merge zone data into the dashboard.")

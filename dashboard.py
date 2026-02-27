@@ -7,9 +7,6 @@ Reads the Excel produced by PlayerValue.py (run that first).
 import glob
 import os
 import re
-import subprocess
-import sys
-from datetime import datetime
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -569,67 +566,6 @@ with st.sidebar:
         "and the NBA aging curve thereafter."
     )
 
-    st.markdown("---")
-    # ── Data freshness ────────────────────────────────────────────────────────
-    darko_files = sorted(
-        glob.glob(os.path.join("DARKO_stats", "darko_talent_processed_*.xlsx")), reverse=True
-    )
-    if darko_files:
-        mtime = os.path.getmtime(darko_files[0])
-        st.caption(
-            f"**DARKO last updated:**  \n"
-            f"{datetime.fromtimestamp(mtime).strftime('%b %d, %Y  %I:%M %p')}"
-        )
-    else:
-        st.caption("**DARKO:** no data file found — run `DARKO.py` first")
-
-    if st.button("🔄 Refresh DARKO Data",
-                 help="Re-scrapes DARKO projections (~1-2 min) then rebuilds player values."):
-        py = sys.executable
-        cwd = os.path.dirname(os.path.abspath(__file__))
-
-        with st.spinner("Scraping DARKO projections…"):
-            r1 = subprocess.run([py, "DARKO.py"], capture_output=True, text=True, cwd=cwd)
-        if r1.returncode != 0:
-            st.error(f"DARKO scrape failed:\n```\n{r1.stderr[-2000:]}\n```")
-            st.stop()
-
-        with st.spinner("Rebuilding player values…"):
-            r2 = subprocess.run([py, "PlayerValue.py"], capture_output=True, text=True, cwd=cwd)
-        if r2.returncode != 0:
-            st.error(f"PlayerValue rebuild failed:\n```\n{r2.stderr[-2000:]}\n```")
-            st.stop()
-
-        st.cache_data.clear()
-        st.success("✅ Data refreshed!")
-        st.rerun()
-
-    st.markdown("---")
-    # ── Physical measurements freshness ───────────────────────────────────────
-    meas_files_sb = sorted(
-        glob.glob(os.path.join("Measurements", "player_measurements_*.xlsx")), reverse=True
-    )
-    if meas_files_sb:
-        mtime_m = os.path.getmtime(meas_files_sb[0])
-        st.caption(
-            f"**Measurements last updated:**  \n"
-            f"{datetime.fromtimestamp(mtime_m).strftime('%b %d, %Y  %I:%M %p')}"
-        )
-    else:
-        st.caption("**Measurements:** not fetched yet — click below to load")
-
-    if st.button("📏 Refresh Measurements",
-                 help="Fetches height, wingspan & weight from craftednba.com (~10 sec)."):
-        py  = sys.executable
-        cwd = os.path.dirname(os.path.abspath(__file__))
-        with st.spinner("Fetching player measurements…"):
-            rm = subprocess.run([py, "measurements.py"], capture_output=True, text=True, cwd=cwd)
-        if rm.returncode != 0:
-            st.error(f"Measurements fetch failed:\n```\n{rm.stderr[-2000:]}\n```")
-        else:
-            st.cache_data.clear()
-            st.success("✅ Measurements updated!")
-            st.rerun()
 
 # ── Filter ────────────────────────────────────────────────────────────────────
 filt = df.copy()
@@ -1980,37 +1916,50 @@ with tab_shots:
             p_shots = shot_df[shot_df["Player"] == shot_player].copy()
 
             # ── View controls ─────────────────────────────────────────────────
-            col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([2, 2, 3])
+            col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([3, 2, 2])
             with col_ctrl1:
                 view_mode = st.radio(
                     "View",
-                    ["Scatter", "Density"],
+                    ["Scatter", "Density", "Efficiency"],
                     horizontal=True,
                     key="shot_view_mode",
                 )
             with col_ctrl2:
-                show_made = st.radio(
-                    "Shots",
-                    ["All", "Made", "Missed"],
-                    horizontal=True,
-                    key="shot_filter_made",
-                )
+                # Made/Missed filter only applies to Scatter and Density
+                if view_mode != "Efficiency":
+                    show_made = st.radio(
+                        "Shots",
+                        ["All", "Made", "Missed"],
+                        horizontal=True,
+                        key="shot_filter_made",
+                    )
+                else:
+                    show_made = "All"
+                    st.caption("Efficiency uses all shots to compute FG%")
 
-            # Apply made/missed filter
+            # Apply made/missed filter (not used in Efficiency mode)
+            all_p_shots = p_shots.copy()   # keep unfiltered copy for Efficiency
             if show_made == "Made":
                 p_shots = p_shots[p_shots["SHOT_MADE_FLAG"] == 1]
             elif show_made == "Missed":
                 p_shots = p_shots[p_shots["SHOT_MADE_FLAG"] == 0]
 
-            st.markdown(f"**{shot_player}** — {len(p_shots):,} shots shown  "
-                        f"({int(p_shots['SHOT_MADE_FLAG'].sum())} made / "
-                        f"{len(p_shots) - int(p_shots['SHOT_MADE_FLAG'].sum())} missed)")
+            total_shown = len(all_p_shots) if view_mode == "Efficiency" else len(p_shots)
+            made_shown  = int(all_p_shots["SHOT_MADE_FLAG"].sum())
+            st.markdown(
+                f"**{shot_player}** — {total_shown:,} shots · "
+                f"{made_shown} made / {total_shown - made_shown} missed · "
+                f"FG% {made_shown / total_shown:.1%}" if total_shown else f"**{shot_player}** — no shots"
+            )
 
             # ── Court figure ──────────────────────────────────────────────────
+            COURT_BG    = "#1a1a2e"   # dark navy — easy on the eyes
+            COURT_LINES = "#c8c8c8"   # light grey lines pop on dark bg
+
             fig_court = go.Figure()
 
             if view_mode == "Scatter":
-                colors = p_shots["SHOT_MADE_FLAG"].map({1: "#2ea44f", 0: "#d73a49"})
+                colors = p_shots["SHOT_MADE_FLAG"].map({1: "#3ddc84", 0: "#ff5c5c"})
                 labels = p_shots["SHOT_MADE_FLAG"].map({1: "Made", 0: "Missed"})
                 hover_text = (
                     labels + "<br>"
@@ -2024,46 +1973,148 @@ with tab_shots:
                     marker=dict(
                         color=colors,
                         size=5,
-                        opacity=0.65,
-                        line=dict(width=0.4, color="rgba(0,0,0,0.2)"),
+                        opacity=0.75,
+                        line=dict(width=0.3, color="rgba(255,255,255,0.15)"),
                     ),
                     text=hover_text,
                     hovertemplate="%{text}<extra></extra>",
                     showlegend=False,
                 ))
                 # Legend proxy traces
-                for label, color in [("Made", "#2ea44f"), ("Missed", "#d73a49")]:
+                for label, color in [("Made ✓", "#3ddc84"), ("Missed ✗", "#ff5c5c")]:
                     fig_court.add_trace(go.Scatter(
                         x=[None], y=[None], mode="markers",
-                        marker=dict(color=color, size=8),
+                        marker=dict(color=color, size=10),
                         name=label, showlegend=True,
                     ))
 
-            else:  # Density
+            elif view_mode == "Density":  # custom colorscale: sparse areas match court bg, hot zones glow
+                _heat_colorscale = [
+                    [0.00, "#1a1a2e"],   # no shots → identical to court background
+                    [0.15, "#3d0020"],   # very sparse → deep maroon
+                    [0.40, "#aa1500"],   # low-medium → dark red
+                    [0.65, "#dd5500"],   # medium → orange-red
+                    [0.82, "#ffaa00"],   # high → amber
+                    [0.93, "#ffee44"],   # very high → yellow
+                    [1.00, "#ffffff"],   # hottest spot → white
+                ]
                 fig_court.add_trace(go.Histogram2dContour(
                     x=p_shots["LOC_X"],
                     y=p_shots["LOC_Y"],
-                    colorscale="Hot",
-                    reversescale=True,
+                    colorscale=_heat_colorscale,
+                    reversescale=False,
                     showscale=True,
+                    colorbar=dict(
+                        title=dict(text="Shot Frequency", side="right", font=dict(color="#cccccc")),
+                        tickvals=[],       # hide tick numbers — Low/High labels are clearer
+                        ticktext=[],
+                        thickness=14,
+                        len=0.6,
+                        tickfont=dict(color="#cccccc"),
+                    ),
                     contours=dict(showlabels=False),
                     line=dict(width=0),
                     hoverinfo="skip",
                     name="Density",
                 ))
+                # Annotation explaining the color scale
+                fig_court.add_annotation(
+                    text="Darker = fewer shots · Brighter = more shots",
+                    xref="paper", yref="paper",
+                    x=0.5, y=-0.04, showarrow=False,
+                    font=dict(size=11, color="#aaaaaa"),
+                    xanchor="center",
+                )
 
-            _draw_half_court(fig_court, line_color="#888888", lw=1.5)
+            else:  # Efficiency — FG% heatmap, cells with < MIN_FGA hidden
+                import numpy as np
+                MIN_FGA = 3   # hide cells with too few attempts to be meaningful
+
+                valid_eff = all_p_shots.dropna(subset=["LOC_X", "LOC_Y", "SHOT_MADE_FLAG"]).copy()
+                valid_eff["SHOT_MADE_FLAG"] = valid_eff["SHOT_MADE_FLAG"].astype(float)
+
+                x_bins = np.linspace(-250, 250, 26)    # 25 cols (~20 units each ≈ 2 ft)
+                y_bins = np.linspace(-52.5, 417.5, 25) # 24 rows
+
+                fga_grid, _, _ = np.histogram2d(
+                    valid_eff["LOC_X"], valid_eff["LOC_Y"], bins=[x_bins, y_bins])
+                fgm_grid, _, _ = np.histogram2d(
+                    valid_eff.loc[valid_eff["SHOT_MADE_FLAG"] == 1, "LOC_X"],
+                    valid_eff.loc[valid_eff["SHOT_MADE_FLAG"] == 1, "LOC_Y"],
+                    bins=[x_bins, y_bins])
+
+                # FG% per cell; mask cells below minimum attempts
+                fg_pct_grid = np.where(
+                    fga_grid >= MIN_FGA,
+                    fgm_grid / np.maximum(fga_grid, 1),
+                    np.nan,
+                ).T  # transpose to (y, x) for Heatmap
+
+                fga_grid_t = fga_grid.T
+                hover_eff = np.where(
+                    fga_grid_t >= MIN_FGA,
+                    [[f"FG%: {fg_pct_grid[r, c]:.0%}  ({int(fga_grid_t[r, c])} att)"
+                      for c in range(fga_grid_t.shape[1])]
+                     for r in range(fga_grid_t.shape[0])],
+                    "",
+                )
+
+                x_centers = (x_bins[:-1] + x_bins[1:]) / 2
+                y_centers = (y_bins[:-1] + y_bins[1:]) / 2
+
+                # Diverging colorscale: red (cold) → neutral (≈ league avg ~47%) → green (hot)
+                # zmin/zmax: 0.20–0.80; league avg 0.47 sits at position (0.47-0.20)/(0.80-0.20) ≈ 0.45
+                _eff_colorscale = [
+                    [0.00, "#cc1100"],   # 20% FG — well below avg
+                    [0.27, "#ee7700"],   # ~36% FG
+                    [0.45, "#555566"],   # ~47% FG ≈ league average (neutral)
+                    [0.62, "#33aa55"],   # ~57% FG
+                    [1.00, "#00dd44"],   # 80%+ FG — elite zone
+                ]
+
+                fig_court.add_trace(go.Heatmap(
+                    x=x_centers,
+                    y=y_centers,
+                    z=fg_pct_grid,
+                    text=hover_eff,
+                    hovertemplate="%{text}<extra></extra>",
+                    colorscale=_eff_colorscale,
+                    zmin=0.20, zmax=0.80,
+                    showscale=True,
+                    colorbar=dict(
+                        title=dict(text="FG%", side="right", font=dict(color="#cccccc")),
+                        tickformat=".0%",
+                        tickfont=dict(color="#cccccc"),
+                        thickness=14,
+                        len=0.6,
+                    ),
+                    name="Efficiency",
+                ))
+                fig_court.add_annotation(
+                    text=f"Red = below avg · Grey ≈ league avg (~47%) · Green = above avg  "
+                         f"(min {MIN_FGA} attempts per cell)",
+                    xref="paper", yref="paper",
+                    x=0.5, y=-0.04, showarrow=False,
+                    font=dict(size=11, color="#aaaaaa"),
+                    xanchor="center",
+                )
+
+            _draw_half_court(fig_court, line_color=COURT_LINES, lw=1.5)
 
             fig_court.update_layout(
-                height=550,
-                margin=dict(l=10, r=10, t=30, b=10),
-                paper_bgcolor="#fafafa",
-                plot_bgcolor="#fafafa",
+                height=570,
+                margin=dict(l=10, r=10, t=10, b=40),
+                paper_bgcolor=COURT_BG,
+                plot_bgcolor=COURT_BG,
                 xaxis=dict(range=[-260, 260], showgrid=False, zeroline=False,
                            showticklabels=False, scaleanchor="y", scaleratio=1),
                 yaxis=dict(range=[-60, 430], showgrid=False, zeroline=False,
                            showticklabels=False),
-                legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.02),
+                legend=dict(
+                    orientation="h", x=0.5, xanchor="center", y=-0.06,
+                    font=dict(color="#cccccc", size=13),
+                    bgcolor="rgba(0,0,0,0)",
+                ),
             )
             st.plotly_chart(fig_court, use_container_width=True)
 
@@ -2120,6 +2171,18 @@ with tab_shots:
 
             zone_chart_df = pd.DataFrame(zone_rows_chart)
 
+            _chart_layout = dict(
+                barmode="group", height=320,
+                margin=dict(l=10, r=10, t=20, b=80),
+                paper_bgcolor="#1e2030",
+                plot_bgcolor="#1e2030",
+                font=dict(color="#cccccc"),
+                legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.35,
+                            bgcolor="rgba(0,0,0,0)"),
+                xaxis=dict(tickangle=-30, gridcolor="#333344", linecolor="#444455"),
+                yaxis=dict(gridcolor="#333344", linecolor="#444455"),
+            )
+
             col_z1, col_z2 = st.columns(2)
 
             with col_z1:
@@ -2129,21 +2192,15 @@ with tab_shots:
                     x=zone_chart_df["Zone"],
                     y=zone_chart_df["Player %"],
                     name=shot_player,
-                    marker_color="#1976d2",
+                    marker_color="#4a9eff",
                 ))
                 fig_dist.add_trace(go.Bar(
                     x=zone_chart_df["Zone"],
                     y=zone_chart_df["Lg Avg %"],
                     name="League Avg",
-                    marker_color="#aaaaaa",
+                    marker_color="#666688",
                 ))
-                fig_dist.update_layout(
-                    barmode="group", height=320,
-                    margin=dict(l=10, r=10, t=20, b=80),
-                    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.35),
-                    yaxis_title="% of FGA",
-                    xaxis_tickangle=-30,
-                )
+                fig_dist.update_layout(**_chart_layout, yaxis_title="% of FGA")
                 st.plotly_chart(fig_dist, use_container_width=True)
 
             with col_z2:
@@ -2153,21 +2210,15 @@ with tab_shots:
                     x=zone_chart_df["Zone"],
                     y=zone_chart_df["Player FG%"],
                     name=shot_player,
-                    marker_color="#2ea44f",
+                    marker_color="#3ddc84",
                 ))
                 fig_fg.add_trace(go.Bar(
                     x=zone_chart_df["Zone"],
                     y=zone_chart_df["Lg Avg FG%"],
                     name="League Avg",
-                    marker_color="#aaaaaa",
+                    marker_color="#666688",
                 ))
-                fig_fg.update_layout(
-                    barmode="group", height=320,
-                    margin=dict(l=10, r=10, t=20, b=80),
-                    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.35),
-                    yaxis_title="FG%",
-                    xaxis_tickangle=-30,
-                )
+                fig_fg.update_layout(**_chart_layout, yaxis_title="FG%")
                 st.plotly_chart(fig_fg, use_container_width=True)
 
             # ── Zone summary table ─────────────────────────────────────────────
