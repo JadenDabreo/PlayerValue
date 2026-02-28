@@ -190,18 +190,57 @@ def load_epm() -> pd.DataFrame:
     path = files[0]
     print(f"  EPM    ← {path}")
     df = pd.read_excel(path, sheet_name="All Players")
-    # tot = total EPM, off = offensive EPM, def = defensive EPM, p_usg = actual-season usage rate
-    want_cols = {"player_name", "tot", "off", "def"} | ({"p_usg"} if "p_usg" in df.columns else set())
-    df = df[[c for c in df.columns if c in want_cols]].copy()
-    rename = {"player_name": "Player", "tot": "EPM", "off": "O-EPM", "def": "D-EPM", "p_usg": "epm_usg"}
+
+    rename = {
+        "player_name":   "Player",
+        "tot":           "EPM",
+        "off":           "O-EPM",
+        "def":           "D-EPM",
+        "tot_change":    "EPM Change",
+        "p_usg":         "epm_usg",
+        "p_mp_48":       "epm_mpg",        # EPM-tracked MPG — used as injury fallback
+        "p_pct_start":   "Start%",
+        "p_tspct":       "TS%",
+        "p_efg":         "eFG%",
+        "p_pts_100":     "PTS/100",
+        "p_ast_100":     "AST/100",
+        "p_tov_100":     "TOV/100",
+        "p_orb_100":     "ORB/100",
+        "p_drb_100":     "DRB/100",
+        "p_stl_100":     "STL/100",
+        "p_blk_100":     "BLK/100",
+        "p_fga_rim_100": "FGA_rim/100",
+        "p_fgpct_rim":   "FG%_rim",
+        "p_fga_mid_100": "FGA_mid/100",
+        "p_fgpct_mid":   "FG%_mid",
+        "p_fg3a_100":    "FG3A/100",
+        "p_fg3pct":      "3P%_epm",
+        "p_fta_100":     "FTA/100",
+    }
+    want = {raw for raw in rename if raw in df.columns}
+    df = df[[c for c in df.columns if c in want]].copy()
     df = df.rename(columns=rename)
-    for col in ("EPM", "O-EPM", "D-EPM"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    if "epm_usg" in df.columns:
-        df["epm_usg"] = pd.to_numeric(df["epm_usg"], errors="coerce")
-        # EPM stores usage as a decimal (0–1); convert to percentage points if needed
-        if df["epm_usg"].dropna().max() <= 1.0:
-            df["epm_usg"] = df["epm_usg"] * 100
+
+    numeric_cols = [v for v in rename.values() if v != "Player"]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    if "epm_usg" in df.columns and df["epm_usg"].dropna().max() <= 1.0:
+        df["epm_usg"] = df["epm_usg"] * 100
+    if "TS%" in df.columns and df["TS%"].dropna().max() <= 1.0:
+        df["TS%"] = (df["TS%"] * 100).round(1)
+    if "eFG%" in df.columns and df["eFG%"].dropna().max() <= 1.0:
+        df["eFG%"] = (df["eFG%"] * 100).round(1)
+    if "Start%" in df.columns and df["Start%"].dropna().max() <= 1.0:
+        df["Start%"] = (df["Start%"] * 100).round(1)
+    if "FG%_rim" in df.columns and df["FG%_rim"].dropna().max() <= 1.0:
+        df["FG%_rim"] = (df["FG%_rim"] * 100).round(1)
+    if "FG%_mid" in df.columns and df["FG%_mid"].dropna().max() <= 1.0:
+        df["FG%_mid"] = (df["FG%_mid"] * 100).round(1)
+    if "3P%_epm" in df.columns and df["3P%_epm"].dropna().max() <= 1.0:
+        df["3P%_epm"] = (df["3P%_epm"] * 100).round(1)
+
     print(f"  {df['EPM'].notna().sum()} players with EPM data")
     return df
 
@@ -241,9 +280,21 @@ if not epm_data.empty:
     epm_data["Player"] = epm_data["Player"].map(canonical_name)
     epm_data["_key"]   = epm_data["Player"].map(normalize_name)
     epm_data = epm_data.drop_duplicates(subset="_key", keep="first")
-    epm_merge_cols = ["_key", "EPM", "O-EPM", "D-EPM"]
-    if "epm_usg" in epm_data.columns:
-        epm_merge_cols.append("epm_usg")
+    _all_epm_cols = [
+        "EPM", "O-EPM", "D-EPM", "EPM Change", "epm_usg", "epm_mpg",
+        "Start%", "TS%", "eFG%", "PTS/100", "AST/100", "TOV/100",
+        "ORB/100", "DRB/100", "STL/100", "BLK/100",
+        "FGA_rim/100", "FG%_rim", "FGA_mid/100", "FG%_mid",
+        "FG3A/100", "3P%_epm", "FTA/100",
+    ]
+    epm_merge_cols = ["_key"] + [c for c in _all_epm_cols if c in epm_data.columns]
+
+    # DARKO also has per-100 columns with the same names (projections, not current season).
+    # Drop them before merging so EPM's actual-season values land cleanly without _x/_y suffixes.
+    _darko_per100_conflicts = [c for c in epm_merge_cols if c != "_key" and c in merged.columns]
+    if _darko_per100_conflicts:
+        merged.drop(columns=_darko_per100_conflicts, inplace=True)
+
     merged = merged.merge(epm_data[epm_merge_cols], on="_key", how="left")
     epm_matched = merged["EPM"].notna().sum()
     print(f"  EPM matched to {epm_matched} / {len(merged)} players")
@@ -286,12 +337,16 @@ merged["projected_MP"] = (merged["MP"] * EXPECTED_GAMES).round(0)
 
 # Players with 0 games this season (injured / not yet appeared) have projected_MP=0,
 # which collapses current WAR and all multi-year outlooks to league minimum.
-# Use a 30 MPG fallback (matches the dashboard's flat-minutes toggle) so their
-# contract outlook reflects skill, not injury status.
+# Use EPM's own MPG estimate as the fallback (more accurate than a flat number),
+# falling back to 30 MPG if EPM data is also unavailable.
 # projected_MP (= role-based volume) stays 0 for current WAR.
-_FALLBACK_MPG        = 30
+_FALLBACK_MPG = 30
+if "epm_mpg" in merged.columns:
+    _fallback_mp = merged["epm_mpg"].fillna(_FALLBACK_MPG) * EXPECTED_GAMES
+else:
+    _fallback_mp = _FALLBACK_MPG * EXPECTED_GAMES
 merged["_outlook_MP"] = merged["projected_MP"].where(
-    merged["projected_MP"] > 0, _FALLBACK_MPG * EXPECTED_GAMES
+    merged["projected_MP"] > 0, _fallback_mp
 )
 
 # Trajectory label from DARKO's own improvement signal
@@ -454,9 +509,15 @@ output_file = os.path.join(output_folder, f"player_value_{year}.xlsx")
 value_cols = [
     "Player", "Team", "Age",
     "DPM", "O-DPM", "D-DPM", "DPM Improvement", "trajectory",
-    "EPM", "O-EPM", "D-EPM",
+    "EPM", "O-EPM", "D-EPM", "EPM Change",
     "composite_skill", "epm_used",
-    "USG%", "usage_scalar", "G", "projected_MP", "WAR",
+    "USG%", "usage_scalar", "Start%", "G", "projected_MP", "WAR",
+    # Shooting efficiency (EPM per-100)
+    "TS%", "eFG%", "PTS/100",
+    "FGA_rim/100", "FG%_rim", "FGA_mid/100", "FG%_mid",
+    "FG3A/100", "3P%_epm", "FTA/100",
+    # Playmaking & rebounding & defense (EPM per-100)
+    "AST/100", "TOV/100", "ORB/100", "DRB/100", "STL/100", "BLK/100",
     # Per-game style stats from Basketball-Reference
     "PTS", "TRB", "AST", "STL", "BLK", "TOV", "3PA", "3P%", "FTA", "FT%",
     # Shot zone breakdown (produced by shot_charts.py)

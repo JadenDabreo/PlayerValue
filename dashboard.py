@@ -332,14 +332,20 @@ def load_data():
             df[f"{col}__n"] = df[col].apply(parse_money)
 
     # Ensure numeric DPM/EPM/WAR/style stats
-    for col in ("DPM", "O-DPM", "D-DPM", "EPM", "O-EPM", "D-EPM",
-                "composite_skill", "WAR", "G", "projected_MP", "USG%", "usage_scalar",
-                "PTS", "TRB", "AST", "STL", "BLK", "TOV", "3PA", "3P%", "FTA", "FT%"):
+    _numeric_cols = (
+        "DPM", "O-DPM", "D-DPM", "EPM", "O-EPM", "D-EPM", "EPM Change",
+        "composite_skill", "WAR", "G", "projected_MP", "USG%", "usage_scalar", "Start%",
+        "TS%", "eFG%", "PTS/100", "AST/100", "TOV/100", "ORB/100", "DRB/100",
+        "STL/100", "BLK/100", "FGA_rim/100", "FG%_rim", "FGA_mid/100", "FG%_mid",
+        "FG3A/100", "3P%_epm", "FTA/100",
+        "PTS", "TRB", "AST", "STL", "BLK", "TOV", "3PA", "3P%", "FTA", "FT%",
+    )
+    for col in _numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # Round skill/rating columns to 2 decimal places for clean display
-    for col in ("DPM", "O-DPM", "D-DPM", "DPM Improvement",
+    for col in ("DPM", "O-DPM", "D-DPM", "DPM Improvement", "EPM Change",
                 "EPM", "O-EPM", "D-EPM", "composite_skill", "WAR", "USG%", "usage_scalar"):
         if col in df.columns:
             df[col] = df[col].round(2)
@@ -550,6 +556,9 @@ with st.sidebar:
     avail_tiers = [t for t in TIER_ORDER if t in df["value_tier"].values]
     sel_tiers = st.multiselect("Value Tier", avail_tiers, default=avail_tiers)
 
+    _traj_options = ["Trending Up", "Stable", "Trending Down"]
+    sel_trajectory = st.multiselect("Trajectory", _traj_options, default=_traj_options)
+
     min_g_sidebar = st.slider("Min games played", min_value=0, max_value=40, value=15, step=5,
                               help="Hide players who haven't played enough games this season")
 
@@ -624,6 +633,8 @@ if sel_player_sidebar != "All Players":
     filt = filt[filt["Player"] == sel_player_sidebar]
 if sel_tiers:
     filt = filt[filt["value_tier"].isin(sel_tiers)]
+if sel_trajectory and len(sel_trajectory) < 3 and "trajectory" in filt.columns:
+    filt = filt[filt["trajectory"].isin(sel_trajectory)]
 if min_g_sidebar > 0:
     filt = filt[filt["G"] >= min_g_sidebar]
 if sort_col in filt.columns:
@@ -998,6 +1009,29 @@ with tab_player:
         m10.metric("Age / G", f"{int(row.get('Age', 0))} / {int(row.get('G', 0))}"
                    if pd.notna(row.get("Age")) else f"— / {int(row.get('G', 0))}")
 
+        # Row 3: shooting & efficiency (EPM per-100 stats)
+        def _fmt(v, decimals=1, suffix=""):
+            return f"{v:.{decimals}f}{suffix}" if pd.notna(v) else "—"
+
+        st.markdown("##### Shooting & Efficiency")
+        e1, e2, e3, e4, e5, e6 = st.columns(6)
+        e1.metric("TS%",        _fmt(row.get("TS%"), 1, "%"))
+        e2.metric("eFG%",       _fmt(row.get("eFG%"), 1, "%"))
+        e3.metric("PTS/100",    _fmt(row.get("PTS/100")))
+        e4.metric("FG%_rim",    _fmt(row.get("FG%_rim"), 1, "%"))
+        e5.metric("FG%_mid",    _fmt(row.get("FG%_mid"), 1, "%"))
+        e6.metric("3P%",        _fmt(row.get("3P%_epm"), 1, "%"))
+
+        st.markdown("##### Playmaking, Rebounding & Defense (per 100 poss.)")
+        d1, d2, d3, d4, d5, d6, d7 = st.columns(7)
+        d1.metric("AST/100",    _fmt(row.get("AST/100")))
+        d2.metric("TOV/100",    _fmt(row.get("TOV/100")))
+        d3.metric("ORB/100",    _fmt(row.get("ORB/100")))
+        d4.metric("DRB/100",    _fmt(row.get("DRB/100")))
+        d5.metric("STL/100",    _fmt(row.get("STL/100")))
+        d6.metric("BLK/100",    _fmt(row.get("BLK/100")))
+        d7.metric("Start%",     _fmt(row.get("Start%"), 1, "%"))
+
         st.markdown("---")
 
         # Contract vs fair value — current + future years
@@ -1168,11 +1202,11 @@ with tab_compare:
             age     = int(row.get("Age")) if pd.notna(row.get("Age")) else "—"
             salary  = money_str(parse_money(row.get("salary")))
             st.markdown(
-                f"<div style='background:#f6f8fa; border-radius:10px; padding:14px 18px;'>"
-                f"<h3 style='margin:0'>{name}</h3>"
+                f"<div style='background:#1e2030; border-radius:10px; padding:14px 18px;'>"
+                f"<h3 style='margin:0; color:#e8e8e8'>{name}</h3>"
                 f"<span style='background:{bg}; color:{fg}; padding:3px 10px; "
                 f"border-radius:12px; font-size:0.8em; font-weight:bold'>{tier}</span>"
-                f"&nbsp; <span style='color:#555; font-size:0.9em'>{team} · Age {age} · {salary}</span>"
+                f"&nbsp; <span style='color:#aaaaaa; font-size:0.9em'>{team} · Age {age} · {salary}</span>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
@@ -1186,21 +1220,41 @@ with tab_compare:
         st.markdown("---")
 
         # ── Side-by-side stat comparison ──────────────────────────────────────
-        st.markdown("##### Skill & Contract Stats")
+        st.markdown("##### Skill & Value")
 
         COMPARE_STATS = [
-            ("DARKO DPM",  "DPM",            ":.2f", True),
-            ("EPM",        "EPM",            ":.2f", True),
-            ("Composite",  "composite_skill",":.2f", True),
-            ("WAR",        "WAR",            ":.2f", True),
-            ("O-DPM",      "O-DPM",          ":.2f", True),
-            ("D-DPM",      "D-DPM",          ":.2f", True),
-            ("O-EPM",      "O-EPM",          ":.2f", True),
-            ("D-EPM",      "D-EPM",          ":.2f", True),
-            ("USG%",       "USG%",           ":.1f", True),
-            ("Usage Scalar","usage_scalar",  ":.2f", True),
-            ("Games",      "G",              ":.0f", True),
-            ("Proj. MP",   "projected_MP",   ":.0f", True),
+            # ── Overall skill ───────────────────────────────────────────────
+            ("DARKO DPM",    "DPM",            ":.2f", True),
+            ("EPM",          "EPM",            ":.2f", True),
+            ("Composite",    "composite_skill",":.2f", True),
+            ("WAR",          "WAR",            ":.2f", True),
+            ("O-DPM",        "O-DPM",          ":.2f", True),
+            ("D-DPM",        "D-DPM",          ":.2f", True),
+            ("O-EPM",        "O-EPM",          ":.2f", True),
+            ("D-EPM",        "D-EPM",          ":.2f", True),
+            ("EPM Change",   "EPM Change",     ":.2f", True),
+            # ── Role & volume ───────────────────────────────────────────────
+            ("USG%",         "USG%",           ":.1f", True),
+            ("Start%",       "Start%",         ":.1f", True),
+            ("Games",        "G",              ":.0f", True),
+            # ── Shooting efficiency ─────────────────────────────────────────
+            ("TS%",          "TS%",            ":.1f", True),
+            ("eFG%",         "eFG%",           ":.1f", True),
+            ("PTS/100",      "PTS/100",        ":.1f", True),
+            ("FG%_rim",      "FG%_rim",        ":.1f", True),
+            ("FG%_mid",      "FG%_mid",        ":.1f", True),
+            ("3P%",          "3P%_epm",        ":.1f", True),
+            ("FGA_rim/100",  "FGA_rim/100",    ":.1f", True),
+            ("FG3A/100",     "FG3A/100",       ":.1f", True),
+            ("FTA/100",      "FTA/100",        ":.1f", True),
+            # ── Playmaking ──────────────────────────────────────────────────
+            ("AST/100",      "AST/100",        ":.1f", True),
+            ("TOV/100",      "TOV/100",        ":.1f", False),  # lower = better
+            # ── Rebounding & defense ────────────────────────────────────────
+            ("ORB/100",      "ORB/100",        ":.1f", True),
+            ("DRB/100",      "DRB/100",        ":.1f", True),
+            ("STL/100",      "STL/100",        ":.1f", True),
+            ("BLK/100",      "BLK/100",        ":.1f", True),
         ]
 
         # Header row
@@ -1225,13 +1279,13 @@ with tab_compare:
             # Highlight the better value green
             if va_f is not None and vb_f is not None:
                 a_wins = va_f > vb_f if higher_better else va_f < vb_f
-                a_style = "color:#1a7f37; font-weight:bold" if a_wins else "color:#555"
-                b_style = "color:#1a7f37; font-weight:bold" if not a_wins else "color:#555"
+                a_style = "color:#2ea44f; font-weight:bold" if a_wins else "color:#cccccc"
+                b_style = "color:#2ea44f; font-weight:bold" if not a_wins else "color:#cccccc"
             else:
-                a_style = b_style = "color:#555"
+                a_style = b_style = "color:#cccccc"
 
             lc, ac, bc = st.columns([2, 2, 2])
-            lc.markdown(f"<span style='color:#888; font-size:0.9em'>{label}</span>",
+            lc.markdown(f"<span style='color:#aaaaaa; font-size:0.9em'>{label}</span>",
                         unsafe_allow_html=True)
             ac.markdown(f"<span style='{a_style}'>{a_str}</span>", unsafe_allow_html=True)
             bc.markdown(f"<span style='{b_style}'>{b_str}</span>", unsafe_allow_html=True)
@@ -1374,27 +1428,30 @@ with tab_compare:
 # plays (3-pt specialist, slasher, playmaker, rim-protector) which advanced metrics flatten.
 _SIM_FEATURES = [
     # Playing-style indicators — most important for "same type of player" matching
-    ("3PA",            "3pt Attempts", 3.0),   # 3-pt specialists vs interior scorers
-    ("AST",            "Assists",      2.5),   # playmakers vs off-ball players
-    ("TRB",            "Rebounds",     2.5),   # bigs vs wings
-    ("FTA",            "FT Attempts",  2.0),   # slashers vs jump-shooters
-    ("BLK",            "Blocks",       2.0),   # rim-protectors vs perimeter defenders
-    ("3P%",            "3pt %",        1.5),   # shooting quality
-    ("STL",            "Steals",       1.5),   # perimeter D
-    ("PTS",            "Points",       1.2),   # scoring role
-    ("TOV",            "Turnovers",    1.0),   # playmaking / ball-security
-    ("FT%",            "FT %",         0.8),   # shooting touch
+    ("FGA_rim/100",    "Rim Rate",     3.0),   # rim-attacker vs perimeter
+    ("FG3A/100",       "3pt Rate",     3.0),   # 3-pt volume
+    ("AST/100",        "Assists/100",  2.5),   # playmakers vs off-ball
+    ("DRB/100",        "DRB/100",      2.5),   # rebounding role
+    ("ORB/100",        "ORB/100",      2.0),   # offensive rebounding
+    ("FTA/100",        "FTA/100",      2.0),   # slashers vs jump-shooters
+    ("BLK/100",        "Blocks/100",   2.0),   # rim-protectors vs perimeter
+    ("STL/100",        "Steals/100",   1.8),   # perimeter D
+    ("TOV/100",        "TOV/100",      1.5),   # ball security
+    ("3P%_epm",        "3pt %",        1.5),   # shooting quality
+    ("FG%_rim",        "Rim FG%",      1.5),   # finishing ability
+    ("TS%",            "TS%",          1.5),   # overall efficiency
+    ("USG%",           "Usage %",      1.5),   # usage role
+    ("Start%",         "Start%",       1.2),   # role indicator
     # Physical measurements
     ("Height_in",      "Height",       2.0),
     ("Wingspan_in",    "Wingspan",     2.0),
     ("Weight_lbs",     "Weight",       1.2),
     ("ArmLength_in",   "Arm Length",   1.0),
     # Advanced metrics (secondary — skill quality on top of role)
-    ("O-DPM",          "Off DPM",      1.5),
-    ("D-DPM",          "Def DPM",      1.5),
     ("O-EPM",          "Off EPM",      1.5),
     ("D-EPM",          "Def EPM",      1.5),
-    ("USG%",           "Usage %",      1.2),
+    ("O-DPM",          "Off DPM",      1.2),
+    ("D-DPM",          "Def DPM",      1.2),
     ("composite_skill","Composite",    1.0),
     ("WAR",            "WAR",          0.6),
     ("Age",            "Age",          0.3),
