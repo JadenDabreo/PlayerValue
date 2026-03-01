@@ -12,12 +12,20 @@ Outputs (in ShotCharts/):
 Install dependency first:
   pip install nba_api
 
+Usage:
+  python shot_charts.py               # fetch only new players (default)
+  python shot_charts.py --days 1      # also refresh players whose last game was yesterday or earlier
+  python shot_charts.py --days 7      # refresh anyone who might have played in the last week
+  python shot_charts.py --refresh-all # re-fetch every player from scratch
+
 Run order in pipeline: ... → PlayerValue.py → shot_charts.py → (dashboard reads both)
 """
 
+import argparse
 import glob
 import os
 import time
+from datetime import date, timedelta
 
 import pandas as pd
 
@@ -101,6 +109,18 @@ def _zone_summary(player: str, shots: pd.DataFrame) -> dict:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Fetch NBA shot chart data")
+    parser.add_argument(
+        "--days", type=int, default=0,
+        help="Re-fetch players whose last recorded game is this many days ago or more. "
+             "E.g. --days 1 refreshes anyone who played yesterday or earlier today."
+    )
+    parser.add_argument(
+        "--refresh-all", action="store_true",
+        help="Re-fetch every player from scratch (ignores existing data)."
+    )
+    args = parser.parse_args()
+
     # Load player list from the latest PlayerValue output
     pv_files = sorted(
         glob.glob(os.path.join("PlayerValue", "player_value_*.xlsx")), reverse=True
@@ -114,36 +134,67 @@ if __name__ == "__main__":
     raw_path  = os.path.join(OUTPUT_DIR, f"shots_raw_{SEASON.replace('-','_')}.xlsx")
     zone_path = os.path.join(OUTPUT_DIR, f"shot_zones_{SEASON.replace('-','_')}.xlsx")
 
-    # Load already-fetched players so we only hit the API for new ones
+    # Load already-fetched data
     done_players  = set()
-    existing_raw  = []
-    existing_zones = []
-    if os.path.exists(raw_path):
-        prev_raw     = pd.read_excel(raw_path)
-        existing_raw.append(prev_raw)
-        done_players |= set(prev_raw["Player"].unique())
-    if os.path.exists(zone_path):
-        existing_zones.append(pd.read_excel(zone_path))
+    existing_raw  = pd.DataFrame()
+    existing_zones = pd.DataFrame()
+
+    if not args.refresh_all and os.path.exists(raw_path):
+        existing_raw  = pd.read_excel(raw_path)
+        done_players  = set(existing_raw["Player"].unique())
+        if os.path.exists(zone_path):
+            existing_zones = pd.read_excel(zone_path)
+
+    # ── Staleness check: re-fetch players with outdated game data ─────────────
+    stale_players = set()
+    if args.days > 0 and not args.refresh_all and not existing_raw.empty:
+        cutoff = date.today() - timedelta(days=args.days)
+        if "GAME_DATE" in existing_raw.columns:
+            last_game = (
+                existing_raw.groupby("Player")["GAME_DATE"]
+                .max()
+                .apply(lambda d: pd.to_datetime(d, errors="coerce").date() if pd.notna(d) else None)
+            )
+            stale_players = {
+                p for p, d in last_game.items()
+                if d is not None and d <= cutoff
+            }
+            if stale_players:
+                print(f"Stale players (last game on or before {cutoff}): {len(stale_players)}")
+                # Remove stale players from done_players so they get re-fetched
+                done_players -= stale_players
+                # Strip their old rows from the existing data
+                existing_raw   = existing_raw[~existing_raw["Player"].isin(stale_players)]
+                if not existing_zones.empty:
+                    existing_zones = existing_zones[~existing_zones["Player"].isin(stale_players)]
 
     new_players = [p for p in players if p not in done_players]
 
-    print(f"Total players in model : {len(players)}")
+    mode_note = ""
+    if args.refresh_all:
+        mode_note = "  (mode: full refresh)"
+    elif args.days > 0:
+        mode_note = f"  (mode: refresh players with games on or before {date.today() - timedelta(days=args.days)})"
+
+    print(f"Total players in model : {len(players)}{mode_note}")
     print(f"Already have shot data : {len(done_players)}")
+    if stale_players:
+        print(f"Refreshing stale       : {len(stale_players)}")
     print(f"Need to fetch          : {len(new_players)}")
 
     if not new_players:
         print("\nAll players already have shot data — nothing to do.")
-        print("Done.")
+        print("Tip: use --days 1 to refresh players who played recently.")
         exit(0)
 
     print(f"Estimated time: ~{len(new_players) * DELAY / 60:.0f} minutes\n")
 
-    all_shots = existing_raw.copy()
-    zone_rows = existing_zones[0].to_dict("records") if existing_zones else []
-    fetched   = 0   # count of newly fetched players this run
+    all_shots = [existing_raw] if not existing_raw.empty else []
+    zone_rows = existing_zones.to_dict("records") if not existing_zones.empty else []
+    fetched   = 0
 
     for i, name in enumerate(new_players):
-        lookup_name = NAME_ALIASES.get(name, name)  # use alias for API lookup if needed
+        lookup_name = NAME_ALIASES.get(name, name)
         pid = _get_player_id(lookup_name)
         if pid is None:
             print(f"  [{i+1}/{len(new_players)}] {name} — ID not found, skipping")
@@ -158,7 +209,7 @@ if __name__ == "__main__":
 
         shots["Player"] = name
         keep_cols = [c for c in
-                     ["Player", "LOC_X", "LOC_Y", "SHOT_MADE_FLAG",
+                     ["Player", "GAME_DATE", "LOC_X", "LOC_Y", "SHOT_MADE_FLAG",
                       "SHOT_ZONE_BASIC", "SHOT_ZONE_AREA",
                       "SHOT_DISTANCE", "ACTION_TYPE"]
                      if c in shots.columns]
@@ -182,7 +233,7 @@ if __name__ == "__main__":
     else:
         raw_df = pd.concat(all_shots, ignore_index=True)
         raw_df.to_excel(raw_path, index=False)
-        print(f"\nRaw shots → {raw_path}  ({len(raw_df):,} rows, {fetched} new players added)")
+        print(f"\nRaw shots → {raw_path}  ({len(raw_df):,} rows, {fetched} players updated)")
 
         zone_df = pd.DataFrame(zone_rows)
         zone_df.to_excel(zone_path, index=False)

@@ -548,11 +548,6 @@ with st.sidebar:
     teams = ["All Teams"] + sorted(df["Team"].dropna().unique().tolist())
     sel_team = st.selectbox("Team", teams)
 
-    _base_players = sorted(df["Player"].dropna().unique().tolist())
-    all_players = ["All Players"] + _player_options(_base_players)
-    sel_player_sidebar_raw = st.selectbox("Search Player", all_players, index=0)
-    sel_player_sidebar = _resolve_player(sel_player_sidebar_raw)
-
     avail_tiers = [t for t in TIER_ORDER if t in df["value_tier"].values]
     sel_tiers = st.multiselect("Value Tier", avail_tiers, default=avail_tiers)
 
@@ -629,8 +624,7 @@ if not use_projected_min:
 filt = df.copy()
 if sel_team != "All Teams":
     filt = filt[filt["Team"] == sel_team]
-if sel_player_sidebar != "All Players":
-    filt = filt[filt["Player"] == sel_player_sidebar]
+
 if sel_tiers:
     filt = filt[filt["value_tier"].isin(sel_tiers)]
 if sel_trajectory and len(sel_trajectory) < 3 and "trajectory" in filt.columns:
