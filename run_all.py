@@ -16,7 +16,6 @@ SCRIPTS = [
     "team_stats.py",
     "measurements.py",
     "PlayerValue.py",
-    "shot_charts.py",   # slow (~8 min) — has resume support if interrupted
 ]
 
 def run_script(script_name):
