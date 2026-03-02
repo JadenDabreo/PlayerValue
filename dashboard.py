@@ -1817,13 +1817,16 @@ with tab_archetypes:
 
     # ── Player search + filters ───────────────────────────────────────────────
     st.markdown("---")
-    arc_search_col, arc_f1, arc_f2, arc_f3 = st.columns([1.5, 1, 2, 1])
+    arc_search_col, arc_team_col, arc_f1, arc_f2, arc_f3 = st.columns([1.5, 1, 1, 2, 1])
     with arc_search_col:
         arc_all_players = sorted(df["Player"].dropna().unique().tolist())
         arc_player_raw = st.selectbox(
             "Search Player", [""] + _player_options(arc_all_players), key="arc_player"
         )
         arc_player = _resolve_player(arc_player_raw)
+    with arc_team_col:
+        arc_teams = ["All Teams"] + sorted(df["Team"].dropna().unique().tolist())
+        arc_team = st.selectbox("Team", arc_teams, key="arc_team")
     with arc_f1:
         grp_filter = st.multiselect(
             "Position Group",
@@ -1919,6 +1922,8 @@ with tab_archetypes:
     elif arc_filter:
         arc_df = arc_df[arc_df["archetype"].isin(arc_filter)]
     arc_df = arc_df[arc_df["value_tier"].isin(_tier_filter)]
+    if arc_team != "All Teams":
+        arc_df = arc_df[arc_df["Team"] == arc_team]
 
     # Sort: position group order, then by WAR desc
     grp_order = {"guard": 0, "wing": 1, "big": 2}
