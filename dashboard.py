@@ -435,6 +435,18 @@ def _draw_half_court(fig, line_color="#555555", lw=1.5):
 
 
 @st.cache_data
+def load_fa_data():
+    """Load Spotrac free agent data produced by spotrac_fa.py. Returns empty DataFrame if not available."""
+    files = sorted(glob.glob(os.path.join("FreeAgents", "free_agents_*.xlsx")), reverse=True)
+    if not files:
+        return pd.DataFrame()
+    fa = pd.read_excel(files[0])
+    fa["Age"] = pd.to_numeric(fa.get("Age"), errors="coerce")
+    fa["Prev AAV"] = pd.to_numeric(fa.get("Prev AAV"), errors="coerce")
+    return fa
+
+
+@st.cache_data
 def load_team_stats():
     path = os.path.join("Team_stats", "nba_2025_2026_team_stats_sorted_with_rank_filled.xlsx")
     if not os.path.exists(path):
@@ -518,6 +530,7 @@ def compute_team_profiles(player_df):
 
 
 df, tier_df, future_cols = load_data()
+spotrac_fa = load_fa_data()
 
 if df is None:
     st.error("No data found. Run `PlayerValue.py` first to generate data.")
@@ -657,9 +670,9 @@ for _k, _v in [("_tbl_key", 0), ("_arc_key", 0),
         st.session_state[_k] = _v
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_table, tab_charts, tab_team, tab_player, tab_compare, tab_similar, tab_archetypes, tab_shots = st.tabs(
+tab_table, tab_charts, tab_team, tab_player, tab_compare, tab_similar, tab_archetypes, tab_shots, tab_fa = st.tabs(
     ["📋 Player Table", "📊 Charts", "🏟️ Team Summary", "🔍 Player Detail",
-     "⚖️ Compare Players", "🔬 Similar Players", "🎯 Archetypes", "🗺️ Shot Chart"]
+     "⚖️ Compare Players", "🔬 Similar Players", "🎯 Archetypes", "🗺️ Shot Chart", "🏃 Free Agents"]
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2451,3 +2464,97 @@ with tab_shots:
                 hide_index=True,
                 use_container_width=True,
             )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 9 — Free Agents
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_fa:
+    st.markdown("#### 🏃 Free Agents")
+
+    if spotrac_fa.empty:
+        st.info(
+            "No free agent data found.  \n"
+            "Run **`spotrac_fa.py`** first to fetch Spotrac data, then restart the dashboard."
+        )
+    else:
+        # ── Merge Spotrac FA list with player value data ───────────────────────
+        # Normalize join key
+        _fa_pv = df[["Player", "Team", "position_group", "archetype",
+                      "composite_skill", "WAR", "salary", "fair_salary", "value_tier"]].copy()
+        _fa_pv["_key"] = _fa_pv["Player"].str.lower().str.strip()
+        _sfa = spotrac_fa.copy()
+        _sfa["_key"] = _sfa["Player"].str.lower().str.strip()
+
+        fa_df = _sfa.merge(_fa_pv.drop(columns=["Player"]), on="_key", how="left")
+        fa_df.drop(columns=["_key"], inplace=True)
+
+        # ── Filters ───────────────────────────────────────────────────────────
+        _fa_type_opts = ["All Types"] + sorted(fa_df["FA Type"].dropna().unique().tolist())
+        _fa_pos_opts  = ["All Positions"] + sorted(fa_df["Pos"].dropna().unique().tolist())
+        _fa_tm_opts   = ["All Teams"] + sorted(fa_df["Prev Team"].dropna().unique().tolist())
+        _fa_arch_opts = (["All Archetypes"] + sorted(fa_df["archetype"].dropna().unique().tolist())
+                         if "archetype" in fa_df.columns else ["All Archetypes"])
+
+        fa_fc1, fa_fc2, fa_fc3, fa_fc4 = st.columns([1, 1, 1.5, 1.5])
+        with fa_fc1:
+            fa_type_filter = st.selectbox("FA Type",   _fa_type_opts,  key="fa_type")
+        with fa_fc2:
+            fa_pos_filter  = st.selectbox("Position",  _fa_pos_opts,   key="fa_pos")
+        with fa_fc3:
+            fa_tm_filter   = st.selectbox("Prev Team", _fa_tm_opts,    key="fa_team")
+        with fa_fc4:
+            fa_arch_filter = st.selectbox("Archetype", _fa_arch_opts,  key="fa_arch")
+
+        # Apply filters
+        fa_filt = fa_df.copy()
+        if fa_type_filter != "All Types":
+            fa_filt = fa_filt[fa_filt["FA Type"] == fa_type_filter]
+        if fa_pos_filter != "All Positions":
+            fa_filt = fa_filt[fa_filt["Pos"] == fa_pos_filter]
+        if fa_tm_filter != "All Teams":
+            fa_filt = fa_filt[fa_filt["Prev Team"] == fa_tm_filter]
+        if fa_arch_filter != "All Archetypes" and "archetype" in fa_filt.columns:
+            fa_filt = fa_filt[fa_filt["archetype"] == fa_arch_filter]
+
+        # Sort by WAR descending, unmatched players at the bottom
+        fa_filt = fa_filt.sort_values("WAR", ascending=False, na_position="last")
+
+        # ── Display table ─────────────────────────────────────────────────────
+        _fa_display = [
+            "Player", "FA Type", "Pos", "Age", "Prev Team", "Prev AAV",
+            "archetype", "position_group", "composite_skill", "WAR",
+            "salary", "fair_salary", "value_tier",
+        ]
+        _fa_display = [c for c in _fa_display if c in fa_filt.columns]
+
+        _fa_renames = {
+            "archetype":       "Archetype",
+            "position_group":  "Pos Group",
+            "composite_skill": "Skill",
+            "value_tier":      "Tier",
+            "Prev AAV":        "Last AAV",
+        }
+
+        _fa_fmt = {"WAR": "{:.2f}", "Skill": "{:.2f}", "Last AAV": "${:,.0f}", "Age": "{:.1f}"}
+
+        def _fa_tier_color(val):
+            c = TIER_COLORS.get(val, "#888888")
+            return f"color: {c}; font-weight: 600"
+
+        styled_fa = (
+            fa_filt[_fa_display]
+            .rename(columns=_fa_renames)
+            .style
+            .format(_fa_fmt, na_rep="—")
+            .map(_fa_tier_color, subset=["Tier"] if "value_tier" in _fa_display else [])
+        )
+
+        st.markdown(f"##### {len(fa_filt)} free agents")
+        st.dataframe(
+            styled_fa,
+            use_container_width=True,
+            height=min(700, (len(fa_filt) + 1) * 38),
+            hide_index=True,
+        )
+        st.caption("Source: Spotrac · Stats: DARKO/EPM via PlayerValue.py · Run `spotrac_fa.py` to refresh")
