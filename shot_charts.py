@@ -140,10 +140,17 @@ if __name__ == "__main__":
     existing_zones = pd.DataFrame()
 
     if not args.refresh_all and os.path.exists(raw_path):
-        existing_raw  = pd.read_excel(raw_path)
-        done_players  = set(existing_raw["Player"].unique())
+        try:
+            existing_raw  = pd.read_excel(raw_path, engine="openpyxl")
+            done_players  = set(existing_raw["Player"].unique())
+        except Exception as e:
+            print(f"  Warning: could not read existing raw file ({e}). Starting fresh.")
+            existing_raw = pd.DataFrame()
         if os.path.exists(zone_path):
-            existing_zones = pd.read_excel(zone_path)
+            try:
+                existing_zones = pd.read_excel(zone_path, engine="openpyxl")
+            except Exception as e:
+                print(f"  Warning: could not read existing zones file ({e}). Will recompute.")
 
     # ── Staleness check: re-fetch players with outdated game data ─────────────
     stale_players = set()
