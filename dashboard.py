@@ -715,9 +715,9 @@ with tab_table:
         filt[display_cols]
         .style
         .format({**_float_fmt, **_int_fmt}, na_rep="—")
-        .applymap(_style_tier,        subset=["value_tier"])
-        .applymap(_style_surplus,     subset=["surplus"])
-        .applymap(_style_trajectory,  subset=["trajectory"] if "trajectory" in display_cols else [])
+        .map(_style_tier,        subset=["value_tier"])
+        .map(_style_surplus,     subset=["surplus"])
+        .map(_style_trajectory,  subset=["trajectory"] if "trajectory" in display_cols else [])
     )
 
     _table_event = st.dataframe(
@@ -1653,8 +1653,8 @@ with tab_similar:
                     .rename(columns=col_renames)
                     .style
                     .format(sim_fmt, na_rep="—")
-                    .applymap(_style_tier, subset=["value_tier"])
-                    .applymap(_sim_bar,    subset=["Similarity"])
+                    .map(_style_tier, subset=["value_tier"])
+                    .map(_sim_bar,    subset=["Similarity"])
                 )
                 st.dataframe(styled_sim, use_container_width=True,
                              height=min(380, (sim_n + 1) * 38))
@@ -1982,9 +1982,9 @@ with tab_archetypes:
         .rename(columns=arc_col_renames)
         .style
         .format(arc_fmt, na_rep="—")
-        .applymap(_style_group,     subset=["Group"])
-        .applymap(_style_archetype, subset=["Archetype"])
-        .applymap(_style_tier,      subset=["value_tier"])
+        .map(_style_group,     subset=["Group"])
+        .map(_style_archetype, subset=["Archetype"])
+        .map(_style_tier,      subset=["value_tier"])
     )
     _arc_event = st.dataframe(
         styled_arc,
