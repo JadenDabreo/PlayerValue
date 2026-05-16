@@ -1,5 +1,7 @@
 # NBA Player Contract Value Dashboard
 
+**[Live App](https://playervalue-f4vcxsdcsjcz9jtbtkttnu.streamlit.app/)**
+
 A Streamlit web app that calculates NBA player contract surplus value using a composite skill model built from DARKO DPM and EPM (Effective Plus-Minus). The dashboard ranks players by how underpaid or overpaid they are relative to their on-court impact and classifies every player into a playing style archetype.
 
 ---
