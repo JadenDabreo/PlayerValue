@@ -3,73 +3,62 @@ import pandas as pd
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 
-DARKO_URL = "https://apanalytics.shinyapps.io/DARKO/"
+DARKO_URL    = "https://www.darko.app/"
 output_folder = "DARKO_stats"
 os.makedirs(output_folder, exist_ok=True)
 
+# The new darko.app uses "Off"/"Def" where PlayerValue.py expects "O-DPM"/"D-DPM"
+COLUMN_RENAMES = {
+    "Off": "O-DPM",
+    "Def": "D-DPM",
+}
+
 
 def fetch_darko_projections() -> pd.DataFrame:
-    """Scrape the 'Current Player Skill Projections' table from DARKO."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        page    = browser.new_page()
 
         print("Loading DARKO...")
-        # Shiny keeps a WebSocket open indefinitely, so networkidle never fires
-        page.goto(DARKO_URL, wait_until="domcontentloaded", timeout=90000)
-        page.wait_for_selector("a[data-value='Current Player Skill Projections']", timeout=60000)
+        page.goto(DARKO_URL, wait_until="networkidle", timeout=60000)
+        page.wait_for_selector("table", timeout=30000)
+        page.wait_for_timeout(2000)
 
-        page.click("a[data-value='Current Player Skill Projections']")
-        print("Waiting for table...")
-        page.wait_for_selector("table.dataTable", timeout=60000)
-        page.wait_for_timeout(2000)  # let data populate
-
-        # Set page length to 100 to minimise number of page turns
-        length_select = page.query_selector("select[name*='length']")
-        if length_select:
-            length_select.select_option("100")
-            page.wait_for_timeout(1500)
-
-        all_rows = []
-        headers = None
-        page_num = 1
-
-        while True:
-            print(f"  Scraping page {page_num}...")
-
-            if headers is None:
-                headers = page.eval_on_selector_all(
-                    "table.dataTable thead th",
-                    "els => els.map(el => el.innerText.trim())"
-                )
-
-            rows = page.eval_on_selector_all(
-                "table.dataTable tbody tr",
-                "els => els.map(row => Array.from(row.querySelectorAll('td')).map(td => td.innerText.trim()))"
+        print("Downloading CSV...")
+        with page.expect_download(timeout=30000) as dl_info:
+            # Try text match first; fall back to any button/link with "csv" in text
+            btn = (
+                page.get_by_text("Download CSV", exact=True).first
+                or page.locator("button, a").filter(has_text="CSV").first
             )
-            rows = [r for r in rows if any(cell != "" for cell in r)]
-            all_rows.extend(rows)
+            btn.click()
 
-            next_btn = page.query_selector(".dataTables_paginate .next:not(.disabled)")
-            if not next_btn:
-                break
-            next_btn.click()
-            page.wait_for_timeout(1500)
-            page_num += 1
-
+        download = dl_info.value
+        df = pd.read_csv(download.path())
         browser.close()
 
-    if not headers or not all_rows:
-        raise RuntimeError("No data found — check if the tab name changed on the DARKO site.")
+    print(f"  Raw columns : {list(df.columns)}")
+    print(f"  Rows fetched: {len(df)}")
 
-    df = pd.DataFrame(all_rows, columns=headers)
-    print(f"  Fetched {len(df)} rows, {len(df.columns)} columns.")
+    df = df.rename(columns=COLUMN_RENAMES)
+
+    # Split combined "Player & Team" column if the CSV merges them
+    if "Player" not in df.columns and "Player & Team" in df.columns:
+        split = df["Player & Team"].str.rsplit(" ", n=1, expand=True)
+        df["Player"] = split[0]
+        df["Team"]   = split[1]
+        df.drop(columns=["Player & Team"], inplace=True)
+
+    # DPM Improvement is no longer on the new site; PlayerValue.py defaults to 0
+    if "DPM Improvement" not in df.columns:
+        df["DPM Improvement"] = float("nan")
+
     return df
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-df = fetch_darko_projections()
+df   = fetch_darko_projections()
 year = datetime.now().year
 
 output_file = os.path.join(output_folder, f"darko_talent_processed_{year}.xlsx")
@@ -81,4 +70,5 @@ with pd.ExcelWriter(output_file, engine="xlsxwriter") as writer:
             team_df = df[df["Team"] == team]
             team_df.to_excel(writer, sheet_name=str(team)[:31], index=False)
 
-print(f"✅ Excel file saved to: {output_file}")
+print(f"✅ Saved → {output_file}")
+print(f"   Final columns: {list(df.columns)}")

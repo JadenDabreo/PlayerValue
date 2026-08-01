@@ -344,12 +344,6 @@ def load_data():
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Round skill/rating columns to 2 decimal places for clean display
-    for col in ("DPM", "O-DPM", "D-DPM", "DPM Improvement", "EPM Change",
-                "EPM", "O-EPM", "D-EPM", "composite_skill", "WAR", "USG%", "usage_scalar"):
-        if col in df.columns:
-            df[col] = df[col].round(2)
-
     # Age as whole number
     if "Age" in df.columns:
         df["Age"] = pd.to_numeric(df["Age"], errors="coerce").round(0).astype("Int64")
